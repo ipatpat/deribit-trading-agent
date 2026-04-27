@@ -50,23 +50,13 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 
-# ===== AI tooling local settings =====
-.claude/settings.local.json
-.gemini/settings.local.json
-
-# ===== IDE =====
-.vscode/
-.idea/
-*.swp
-*.swo
-*.swn
-
 # ===== OS =====
-.DS_Store
 Thumbs.db
 ehthumbs.db
 Desktop.ini
 
-# ===== Jupyter =====
-.ipynb_checkpoints/
-*.ipynb_checkpoints
+# ===== Catch-all: ignore every dotfile / dotdir =====
+# Keep .gitignore itself tracked so rules ship with the repo.
+.*
+!.gitignore
+!**/.gitignore
