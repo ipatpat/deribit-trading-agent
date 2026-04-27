@@ -1,0 +1,72 @@
+# ===== Secrets & Credentials =====
+.env
+.env.*
+*.key
+*.pem
+*credentials*
+*secret*
+
+# ===== Data & Databases =====
+data/*.db
+data/*.db-*
+data/*.sqlite
+data/*.sqlite-*
+
+# ===== Documentation (excluded by request) =====
+deribit_api_docs/
+docs/
+openspec/
+frontend/openspec/
+
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+dist/
+build/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.coverage
+.coverage.*
+htmlcov/
+
+# ===== Node / Frontend =====
+node_modules/
+**/node_modules/
+frontend/dist/
+frontend/.vite/
+frontend/.next/
+frontend/.cache/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ===== AI tooling local settings =====
+.claude/settings.local.json
+.gemini/settings.local.json
+
+# ===== IDE =====
+.vscode/
+.idea/
+*.swp
+*.swo
+*.swn
+
+# ===== OS =====
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# ===== Jupyter =====
+.ipynb_checkpoints/
+*.ipynb_checkpoints
