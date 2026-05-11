@@ -13,7 +13,7 @@ A personal **derivatives trading terminal** for Deribit with a built-in **AI ass
 | You are… | What you'll get |
 | --- | --- |
 | **A discretionary derivatives trader** | A clean Deribit UI with live perp/options/futures data, smart-order execution algos (tick-chaser, intent router), portfolio + risk dashboards, and an LLM you can ask "show me the BTC option market" instead of clicking through tabs. |
-| **An AI engineer / agent designer** | A worked example of *progressive disclosure* in MCP tool design: 12 atomic read-only data tools + 1 compute tool, type-adaptive returns, slim system prompt (~800 tokens), and SSE streaming protocol that the frontend renders incrementally. Browse `src/deribit_trading/agent/` and `src/deribit_trading/mcp_server.py` for the full implementation. |
+| **An AI engineer / agent designer** | A worked example of *progressive disclosure* in MCP tool design: 12 atomic data tools + 1 compute tool, type-adaptive returns, slim system prompt (~800 tokens), and SSE streaming protocol that the frontend renders incrementally. Browse `src/deribit_trading/agent/` and `src/deribit_trading/mcp_server.py` for the full implementation. |
 | **A derivatives beginner** | A safe playground to read live Greeks / IV / funding rates, simulate multi-leg payoffs (straddles, condors, covered calls) with the `analyze_option_combo` tool, and ask the AI to explain instruments and strategies in plain language. |
 
 ---
@@ -35,7 +35,6 @@ A personal **derivatives trading terminal** for Deribit with a built-in **AI ass
 ![Futures page](assets/screenshots/futures.png)
 
 ### AI assistant (right-side chat)
-- **Read-only Phase 1**: cannot place, cancel, or modify orders.
 - **OpenAI-compatible LLM**: defaults to DeepSeek; works with Zhipu GLM, OpenAI, vLLM, ollama, anything OpenAI-API-compatible.
 - **13 atomic MCP tools**:
   - Discovery — `list_instruments`, `list_expiries`
@@ -95,8 +94,8 @@ A few opinions baked into the design — worth knowing if you're reading the cod
 
 ## Status
 
-- **Phase 1 (current)**: read-only AI assistant + full trading UI. Write tools (`place_order`, `cancel_order`, `smart_order`, etc.) are wired in the backend but disabled at the agent layer.
-- **Future**: Skill layer (Python analytics modules — IV skew, term structure, IV-RV), Phase 3 confirmation-card flow for order execution, Tier 2 strategy playbook.
+- **Today**: full trading UI (place order, cancel, smart orders) plus an AI assistant focused on market analysis, portfolio queries, and multi-leg strategy modeling.
+- **Coming next**: trading tools for the agent (`place_order`, `cancel_order`, `smart_order`) gated by a confirmation-card flow, a Skill layer for heavier analytics (IV skew, term structure, IV-RV), and a Tier 2 strategy playbook.
 
 ---
 

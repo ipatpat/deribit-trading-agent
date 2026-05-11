@@ -2,7 +2,7 @@
 
 [English](./README.md) · [中文](./README_CN.md)
 
-一个个人用的 **衍生品交易终端**（Deribit），内置 **只读 AI 助手**，可以流式回答关于实时行情、持仓组合、期权策略的问题。
+一个个人用的 **衍生品交易终端**（Deribit），内置 **AI 助手**，可以流式回答关于实时行情、持仓组合、期权策略的问题。
 
 ![Dashboard with AI assistant](assets/screenshots/dashboard.png)
 
@@ -13,7 +13,7 @@
 | 你是… | 你能得到什么 |
 | --- | --- |
 | **主观型衍生品交易员** | 一套干净的 Deribit 操作界面：实时永续/期权/期货行情、智能下单算法（tick 追价、意图路由）、组合与风控看板，外加一个可以问"给我看看 BTC 期权市场"的 LLM——不用再切来切去地点 tab。 |
-| **AI 工程师 / Agent 设计师** | 一个 *渐进式披露* 在 MCP 工具设计中的完整范例：12 个原子化只读数据工具 + 1 个计算工具、类型自适应返回、精简系统提示词（约 800 tokens）、以及前端逐块渲染的 SSE 流式协议。完整实现可看 `src/deribit_trading/agent/` 和 `src/deribit_trading/mcp_server.py`。 |
+| **AI 工程师 / Agent 设计师** | 一个 *渐进式披露* 在 MCP 工具设计中的完整范例：12 个原子化数据工具 + 1 个计算工具、类型自适应返回、精简系统提示词（约 800 tokens）、以及前端逐块渲染的 SSE 流式协议。完整实现可看 `src/deribit_trading/agent/` 和 `src/deribit_trading/mcp_server.py`。 |
 | **衍生品初学者** | 一个安全的练习场：读取实时希腊值 / IV / 资金费率，用 `analyze_option_combo` 工具模拟多腿组合损益（跨式、铁鹰、备兑等），并让 AI 用大白话给你解释合约和策略。 |
 
 ---
@@ -96,8 +96,8 @@ npm run dev                          # http://localhost:5173
 
 ## 当前状态
 
-- **Phase 1（当前）**：只读 AI 助手 + 完整交易 UI。写工具（`place_order`、`cancel_order`、`smart_order` 等）后端已经接通，但在 agent 层被禁用。
-- **后续**：Skill 层（Python 分析模块——IV 偏度、期限结构、IV-RV）、Phase 3 下单确认卡流程、Tier 2 策略手册。
+- **现在**：完整的交易 UI（下单、撤单、智能下单）+ 专注行情分析、持仓查询、多腿策略建模的 AI 助手。
+- **接下来**：为 agent 加入交易类工具（`place_order`、`cancel_order`、`smart_order`），配套下单确认卡流程；Skill 层用于更重的分析（IV 偏度、期限结构、IV-RV）；Tier 2 策略手册。
 
 ---
 
