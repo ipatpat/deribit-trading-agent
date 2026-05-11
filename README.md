@@ -1,6 +1,8 @@
 # Deribit Trading Agent
 
-A personal **derivatives trading terminal** for Deribit with a built-in **AI assistant** that streams answers about live markets, your portfolio, and option strategies — without ever placing an order on your behalf.
+[English](./README.md) · [中文](./README_CN.md)
+
+A personal **derivatives trading terminal** for Deribit with a built-in **AI assistant** that streams answers about live markets, your portfolio, and option strategies.
 
 ![Dashboard with AI assistant](assets/screenshots/dashboard.png)
 
@@ -44,10 +46,6 @@ A personal **derivatives trading terminal** for Deribit with a built-in **AI ass
   - Compute — `analyze_option_combo` (multi-leg payoff curve + aggregate Greeks)
 - **SSE streaming**: text deltas, tool-use lifecycle events, tool results, terminal/error events — frontend renders each chunk live.
 
-**Each tool call renders as an inline card you can expand to inspect args + raw JSON output:**
-
-![AI assistant with tool_use card](assets/screenshots/chat-tool-use.png)
-
 ---
 
 ## Stack
@@ -67,9 +65,7 @@ A personal **derivatives trading terminal** for Deribit with a built-in **AI ass
 ## Quick start
 
 ```bash
-# 1. Backend
-uv sync
-export DEEPSEEK_API_KEY=sk-...      # any OpenAI-compatible endpoint works
+# 1.endpoint works
 uv run python -m deribit_trading api --env testnet --host 127.0.0.1 --port 8000
 
 # 2. Frontend
@@ -82,8 +78,6 @@ npm run dev                          # http://localhost:5173
 ```
 
 Deribit testnet is recommended for first run. The production switch requires explicit confirmation in Settings.
-
-![Settings page](assets/screenshots/settings.png)
 
 ---
 
