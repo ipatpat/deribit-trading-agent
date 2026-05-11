@@ -41,3 +41,25 @@ class Instrument(BaseModel, extra="ignore"):
     @property
     def is_option(self) -> bool:
         return self.kind == InstrumentKind.OPTION
+
+
+def parse_instrument_kind(name: str) -> str:
+    """Classify an instrument name into 'perpetual' / 'future' / 'option' / 'unknown'.
+
+    Examples:
+        BTC-PERPETUAL          -> 'perpetual'
+        BTC-27JUN26            -> 'future'
+        BTC-27JUN26-70000-C    -> 'option'
+        BTC-27JUN26-70000-P    -> 'option'
+        anything else          -> 'unknown'
+    """
+    if not isinstance(name, str) or "-" not in name:
+        return "unknown"
+    parts = name.split("-")
+    if len(parts) == 2 and parts[1] == "PERPETUAL":
+        return "perpetual"
+    if len(parts) == 2:
+        return "future"
+    if len(parts) == 4 and parts[3] in ("C", "P"):
+        return "option"
+    return "unknown"

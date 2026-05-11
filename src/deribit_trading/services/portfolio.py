@@ -135,7 +135,10 @@ class PortfolioService:
         return self._aggregate_greeks(positions)
 
     async def get_pnl_attribution(self, currency: str) -> list[dict[str, Any]]:
-        """Get PnL broken down by instrument, sorted by contribution."""
+        """Get PnL broken down by instrument, sorted by contribution.
+
+        Skips net-zero / closed positions (size == 0, direction == 'zero').
+        """
         positions = await self._client.get_positions(currency)
         attribution = [
             {
@@ -147,6 +150,7 @@ class PortfolioService:
                 "total_pnl": p.total_profit_loss,
             }
             for p in positions
+            if p.size > 0
         ]
         attribution.sort(key=lambda x: abs(x["total_pnl"]), reverse=True)
         return attribution

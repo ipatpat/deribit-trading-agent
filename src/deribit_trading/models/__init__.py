@@ -11,7 +11,7 @@ from .enums import (
     TimeInForce,
     TriggerType,
 )
-from .instrument import Instrument
+from .instrument import Instrument, parse_instrument_kind
 from .order import Order
 from .position import Position
 from .ticker import Greeks, Ticker
@@ -35,4 +35,5 @@ __all__ = [
     "TimeInForce",
     "Trade",
     "TriggerType",
+    "parse_instrument_kind",
 ]

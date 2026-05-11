@@ -19,6 +19,7 @@ class OptionType(StrEnum):
 class Direction(StrEnum):
     BUY = "buy"
     SELL = "sell"
+    ZERO = "zero"  # Deribit returns this for net-zero positions
 
 
 class OrderType(StrEnum):

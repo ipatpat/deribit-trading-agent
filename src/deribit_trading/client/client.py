@@ -166,6 +166,23 @@ class DeribitClient:
             {"instrument_name": instrument_name, "depth": depth},
         )
 
+    async def get_book_summary_by_currency(
+        self, currency: str, kind: str | None = None
+    ) -> list[dict[str, Any]]:
+        """One RTT batch fetch of market summary for all instruments in a currency.
+
+        Wraps Deribit RPC ``public/get_book_summary_by_currency``. Returns the
+        raw array of dicts; callers slim fields as needed.
+
+        Args:
+            currency: 'BTC' or 'ETH'.
+            kind: Optional 'option' / 'future' / 'perpetual' filter.
+        """
+        params: dict[str, Any] = {"currency": currency}
+        if kind is not None:
+            params["kind"] = kind
+        return await self.call("public/get_book_summary_by_currency", params)
+
     # ── Typed trading methods ───────────────────────────────────────
 
     async def buy(
