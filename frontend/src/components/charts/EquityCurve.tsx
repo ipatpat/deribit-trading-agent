@@ -10,6 +10,7 @@ import {
   BTC_PRESET,
   ETH_PRESET,
 } from '../../utils/axisFormat';
+import { isEquityFlat } from '../../utils/equityFlat';
 
 const TIME_RANGES = ['1h', '1d', '7d', '30d'] as const;
 type Unit = 'BTC' | 'ETH' | 'USD';
@@ -63,18 +64,19 @@ function EquityCurve({ btcPrice = 0, ethPrice = 0 }: EquityCurveProps) {
   let chartData: [number, number][] = [];
   let yFormatter: (v: number) => string;
   let tooltipFormatter: (val: number) => string;
+  let seriesValues: number[] = [];
 
   if (unit === 'BTC') {
     chartData = btcData.map((d) => [d.time, d.value]);
-    const btcVals = btcData.map((d) => d.value);
-    const axis = pickAxisFormatter(btcVals, BTC_PRESET);
+    seriesValues = btcData.map((d) => d.value);
+    const axis = pickAxisFormatter(seriesValues, BTC_PRESET);
     yFormatter = axis.format;
     const tipDecimals = Math.max(axis.decimals, 4);
     tooltipFormatter = (v) => `${v.toFixed(tipDecimals)} BTC`;
   } else if (unit === 'ETH') {
     chartData = ethData.map((d) => [d.time, d.value]);
-    const ethVals = ethData.map((d) => d.value);
-    const axis = pickAxisFormatter(ethVals, ETH_PRESET);
+    seriesValues = ethData.map((d) => d.value);
+    const axis = pickAxisFormatter(seriesValues, ETH_PRESET);
     yFormatter = axis.format;
     const tipDecimals = Math.max(axis.decimals, 2);
     tooltipFormatter = (v) => `${v.toFixed(tipDecimals)} ETH`;
@@ -85,8 +87,8 @@ function EquityCurve({ btcPrice = 0, ethPrice = 0 }: EquityCurveProps) {
       const ethVal = ethMap.get(d.time) ?? 0;
       return [d.time, d.value * btcPrice + ethVal * ethPrice];
     });
-    const usdVals = chartData.map((p) => p[1]);
-    const axis = pickAxisFormatter(usdVals, USD_PRESET);
+    seriesValues = chartData.map((p) => p[1]);
+    const axis = pickAxisFormatter(seriesValues, USD_PRESET);
     yFormatter = axis.format;
     tooltipFormatter = (v) => {
       if (!Number.isFinite(v)) return '';
@@ -99,6 +101,8 @@ function EquityCurve({ btcPrice = 0, ethPrice = 0 }: EquityCurveProps) {
   }
 
   const lineColor = unit === 'ETH' ? CHART.ethBlue : CHART.accent;
+  const flatInfo = isEquityFlat(seriesValues, unit);
+  const isFlat = flatInfo.flat;
 
   const option = {
     grid: { top: 20, right: 20, bottom: 30, left: 70 },
@@ -112,8 +116,10 @@ function EquityCurve({ btcPrice = 0, ethPrice = 0 }: EquityCurveProps) {
       type: 'value',
       axisLine: { show: false },
       axisLabel: { fontSize: 10, color: CHART.secondary, formatter: yFormatter },
-      splitLine: { lineStyle: { color: '#F0EDE6' } },
-      scale: true,
+      splitLine: isFlat ? { show: false } : { lineStyle: { color: '#F0EDE6' } },
+      scale: !isFlat,
+      min: isFlat ? flatInfo.level - Math.max(flatInfo.threshold, 1e-9) * 5 : undefined,
+      max: isFlat ? flatInfo.level + Math.max(flatInfo.threshold, 1e-9) * 5 : undefined,
     },
     series: [
       {
@@ -152,7 +158,7 @@ function EquityCurve({ btcPrice = 0, ethPrice = 0 }: EquityCurveProps) {
 
   return (
     <div>
-      <div className="flex items-center justify-between mb-3">
+      <div className="flex items-center justify-between flex-wrap gap-y-2 mb-3">
         <div className="flex gap-1 bg-cream rounded-lg p-1">
           {(['BTC', 'ETH', 'USD'] as Unit[]).map((u) => (
             <button
@@ -185,7 +191,14 @@ function EquityCurve({ btcPrice = 0, ethPrice = 0 }: EquityCurveProps) {
           {loading ? <div className="space-y-2 w-full"><div className="h-[200px] bg-cream rounded animate-pulse" /></div> : 'No equity data yet'}
         </div>
       ) : (
-        <ReactECharts option={option} style={{ height: 200 }} notMerge />
+        <div className="relative">
+          <ReactECharts option={option} style={{ height: 200 }} notMerge />
+          {isFlat && (
+            <span className="absolute top-2 right-3 text-[10px] text-secondary font-mono bg-cream/90 rounded px-1.5 py-0.5 border border-divider">
+              &asymp; flat
+            </span>
+          )}
+        </div>
       )}
     </div>
   );

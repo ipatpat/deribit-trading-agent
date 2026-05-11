@@ -3,7 +3,7 @@ import Card from '../components/common/Card';
 import Skeleton from '../components/common/Skeleton';
 import EquityCurve from '../components/charts/EquityCurve';
 import { type PortfolioOverview, getPortfolioOverview } from '../api/client';
-import { formatPrice, formatUsd, formatCompactUsd } from '../utils/format';
+import { formatPrice, formatUsd, formatCompactUsd, formatNativeBalance } from '../utils/format';
 import { usePolling } from '../utils/usePolling';
 import { useRefreshInterval } from '../stores/settings';
 import { useToastStore } from '../stores/toast';
@@ -58,31 +58,31 @@ function Dashboard() {
   const marginBarColor = marginPct > 0.8 ? 'bg-loss' : marginPct > 0.5 ? 'bg-accent' : 'bg-profit';
 
   return (
-    <div className="dashboard-mode space-y-6">
+    <div className="dashboard-mode space-y-4 pb-20">
 
-      {/* Hero numbers */}
+      {/* Hero numbers — compact */}
       <div className="flex items-end justify-between px-1">
         <div>
-          <div className="text-sm text-secondary uppercase tracking-wider font-semibold">Total Equity</div>
+          <div className="text-xs text-secondary uppercase tracking-wider font-semibold">Total Equity</div>
           {loading ? (
-            <Skeleton className="h-10 w-48 mt-1" />
+            <Skeleton className="h-8 w-44 mt-0.5" />
           ) : (
-            <div className="text-3xl font-semibold font-mono text-primary tracking-tight mt-1">
+            <div className="text-2xl font-semibold font-mono text-primary tracking-tight mt-0.5">
               {formatCompactUsd(totalUsd)}
             </div>
           )}
         </div>
         {!loading && (
-          <div className="flex gap-8 items-end">
+          <div className="flex gap-6 items-end">
             <div className="text-right">
-              <div className="text-xs text-secondary uppercase tracking-wider font-semibold">Total PnL</div>
-              <div className={`text-xl font-semibold font-mono mt-1 ${totalPnlUsd >= 0 ? 'text-profit' : 'text-loss'}`}>
+              <div className="text-[10px] text-secondary uppercase tracking-wider font-semibold">Total PnL</div>
+              <div className={`text-lg font-semibold font-mono mt-0.5 ${totalPnlUsd >= 0 ? 'text-profit' : 'text-loss'}`}>
                 {formatUsd(totalPnlUsd)}
               </div>
             </div>
             <div className="text-right">
-              <div className="text-xs text-secondary uppercase tracking-wider font-semibold">Today</div>
-              <div className={`text-base font-semibold font-mono mt-1 ${todayPnlUsd >= 0 ? 'text-profit' : 'text-loss'}`}>
+              <div className="text-[10px] text-secondary uppercase tracking-wider font-semibold">Today</div>
+              <div className={`text-sm font-semibold font-mono mt-0.5 ${todayPnlUsd >= 0 ? 'text-profit' : 'text-loss'}`}>
                 {formatUsd(todayPnlUsd)}
               </div>
             </div>
@@ -103,62 +103,62 @@ function Dashboard() {
         </div>
       )}
 
-      {/* Four-metric bar */}
-      <div className="grid grid-cols-4 gap-6">
+      {/* Four-metric bar — 96px tall compact cards */}
+      <div className="grid grid-cols-4 gap-4">
         {/* BTC */}
-        <Card className="px-5 py-5">
-          <div className="text-xs text-secondary uppercase tracking-wider font-semibold">BTC</div>
-          {loading ? <Skeleton className="h-6 w-28 mt-2" /> : (
-            <div className="mt-2">
-              <div className="text-lg font-semibold font-mono text-primary">
-                {formatPrice(btc?.equity, 4)}
+        <Card className="px-4 py-3 h-24">
+          <div className="text-[10px] text-secondary uppercase tracking-wider font-semibold">BTC</div>
+          {loading ? <Skeleton className="h-5 w-24 mt-1.5" /> : (
+            <div className="mt-1">
+              <div className="text-base font-semibold font-mono text-primary leading-tight">
+                {formatNativeBalance(btc?.equity)}
               </div>
-              <div className="text-sm text-secondary font-mono mt-0.5">
+              <div className="text-xs text-secondary font-mono mt-0.5">
                 &asymp;{formatCompactUsd((btc?.equity ?? 0) * btcPrice)}
               </div>
-              <div className={`text-sm font-mono mt-1.5 font-medium ${(btc?.total_pl ?? 0) >= 0 ? 'text-profit' : 'text-loss'}`}>
-                {(btc?.total_pl ?? 0) >= 0 ? '+' : '-'}{formatPrice(Math.abs(btc?.total_pl ?? 0), 4)} / {formatUsd((btc?.total_pl ?? 0) * btcPrice)}
+              <div className={`text-xs font-mono mt-0.5 font-medium ${(btc?.total_pl ?? 0) >= 0 ? 'text-profit' : 'text-loss'}`}>
+                {(btc?.total_pl ?? 0) >= 0 ? '+' : '-'}{formatNativeBalance(Math.abs(btc?.total_pl ?? 0))} / {formatUsd((btc?.total_pl ?? 0) * btcPrice)}
               </div>
             </div>
           )}
         </Card>
 
         {/* ETH */}
-        <Card className="px-5 py-5">
-          <div className="text-xs text-secondary uppercase tracking-wider font-semibold">ETH</div>
-          {loading ? <Skeleton className="h-6 w-28 mt-2" /> : (
-            <div className="mt-2">
-              <div className="text-lg font-semibold font-mono text-primary">
-                {formatPrice(eth?.equity, 4)}
+        <Card className="px-4 py-3 h-24">
+          <div className="text-[10px] text-secondary uppercase tracking-wider font-semibold">ETH</div>
+          {loading ? <Skeleton className="h-5 w-24 mt-1.5" /> : (
+            <div className="mt-1">
+              <div className="text-base font-semibold font-mono text-primary leading-tight">
+                {formatNativeBalance(eth?.equity)}
               </div>
-              <div className="text-sm text-secondary font-mono mt-0.5">
+              <div className="text-xs text-secondary font-mono mt-0.5">
                 &asymp;{formatCompactUsd((eth?.equity ?? 0) * ethPrice)}
               </div>
-              <div className={`text-sm font-mono mt-1.5 font-medium ${(eth?.total_pl ?? 0) >= 0 ? 'text-profit' : 'text-loss'}`}>
-                {(eth?.total_pl ?? 0) >= 0 ? '+' : '-'}{formatPrice(Math.abs(eth?.total_pl ?? 0), 4)} / {formatUsd((eth?.total_pl ?? 0) * ethPrice)}
+              <div className={`text-xs font-mono mt-0.5 font-medium ${(eth?.total_pl ?? 0) >= 0 ? 'text-profit' : 'text-loss'}`}>
+                {(eth?.total_pl ?? 0) >= 0 ? '+' : '-'}{formatNativeBalance(Math.abs(eth?.total_pl ?? 0))} / {formatUsd((eth?.total_pl ?? 0) * ethPrice)}
               </div>
             </div>
           )}
         </Card>
 
         {/* Margin */}
-        <Card className="px-5 py-5 flex flex-col justify-between">
+        <Card className="px-4 py-3 h-24 flex flex-col justify-between">
           <div>
             <div className="flex items-center justify-between">
-              <span className="text-xs text-secondary uppercase tracking-wider font-semibold">Margin</span>
+              <span className="text-[10px] text-secondary uppercase tracking-wider font-semibold">Margin</span>
               {!loading && (
-                <span className="text-sm font-mono font-semibold text-primary">{(marginPct * 100).toFixed(1)}%</span>
+                <span className="text-xs font-mono font-semibold text-primary">{(marginPct * 100).toFixed(1)}%</span>
               )}
             </div>
-            {loading ? <Skeleton className="h-6 w-full mt-2" /> : (
-              <div className="mt-3">
-                <div className="h-2 bg-cream-dark rounded-full overflow-hidden">
+            {loading ? <Skeleton className="h-5 w-full mt-2" /> : (
+              <div className="mt-2">
+                <div className="h-1.5 bg-cream-dark rounded-full overflow-hidden">
                   <div
                     className={`h-full rounded-full transition-all ${marginBarColor}`}
                     style={{ width: `${Math.min(marginPct * 100, 100)}%` }}
                   />
                 </div>
-                <div className="flex justify-between mt-2 text-xs font-mono text-secondary">
+                <div className="flex justify-between mt-1.5 text-[10px] font-mono text-secondary">
                   <span>{formatCompactUsd(totalMarginUsd)} used</span>
                   <span>{formatCompactUsd(totalAvailUsd)} avail</span>
                 </div>
@@ -168,40 +168,46 @@ function Dashboard() {
         </Card>
 
         {/* Delta */}
-        <Card className="px-5 py-5">
-          <div className="text-xs text-secondary uppercase tracking-wider font-semibold">Net Delta</div>
-          {loading ? <Skeleton className="h-6 w-16 mt-2" /> : (
-            <div className="mt-2">
-              <div className="text-lg font-semibold font-mono text-primary">
-                {netDelta.toFixed(4)}
-              </div>
-              <div className="text-sm text-secondary mt-1 font-medium">
-                {netDelta > 0 ? 'Net Long' : netDelta < 0 ? 'Net Short' : 'Neutral'}
-              </div>
+        <Card className="px-4 py-3 h-24">
+          <div className="text-[10px] text-secondary uppercase tracking-wider font-semibold">Net Delta</div>
+          {loading ? <Skeleton className="h-5 w-16 mt-1.5" /> : (
+            <div className="mt-1">
+              {Math.abs(netDelta) < 0.01 ? (
+                <div className="text-base font-semibold font-mono text-secondary">&asymp;0</div>
+              ) : (
+                <>
+                  <div className="text-base font-semibold font-mono text-primary leading-tight">
+                    {netDelta.toFixed(4)}
+                  </div>
+                  <div className="text-xs text-secondary mt-0.5 font-medium">
+                    {netDelta > 0 ? 'Net Long' : 'Net Short'}
+                  </div>
+                </>
+              )}
             </div>
           )}
         </Card>
       </div>
 
-      {/* Equity Curve */}
-      <Card className="p-5">
-        <EquityCurve btcPrice={btcPrice} ethPrice={ethPrice} />
-      </Card>
+      {/* Equity Curve + Positions side-by-side */}
+      <div className="grid grid-cols-2 gap-4">
+        <Card className="p-4">
+          <EquityCurve btcPrice={btcPrice} ethPrice={ethPrice} />
+        </Card>
 
-      {/* Positions */}
-      <Card className="p-5">
-        <div className="text-sm text-primary uppercase tracking-wider font-semibold mb-4">
-          Open Positions
-        </div>
-        {loading ? (
-          <div className="space-y-3">
-            {[1, 2].map((i) => <Skeleton key={i} className="h-10 w-full" />)}
+        <Card className="p-4 flex flex-col min-h-0">
+          <div className="text-xs text-primary uppercase tracking-wider font-semibold mb-3 flex-shrink-0">
+            Open Positions
           </div>
-        ) : positions.length === 0 ? (
-          <div className="text-base text-secondary py-8 text-center">No open positions</div>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
+          {loading ? (
+            <div className="space-y-2 flex-1">
+              {[1, 2].map((i) => <Skeleton key={i} className="h-8 w-full" />)}
+            </div>
+          ) : positions.length === 0 ? (
+            <div className="text-sm text-secondary py-6 text-center flex-1 flex items-center justify-center">No open positions</div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs">
               <thead className="sticky top-0 bg-white z-10">
                 <tr className="border-b border-divider text-xs text-secondary uppercase tracking-wider">
                   <th className="text-left pb-3 pr-4 font-semibold">Instrument</th>
@@ -254,8 +260,9 @@ function Dashboard() {
               </tbody>
             </table>
           </div>
-        )}
-      </Card>
+          )}
+        </Card>
+      </div>
     </div>
   );
 }

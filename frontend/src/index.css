@@ -11,6 +11,11 @@
     --font-size-xl: 1.125rem;  /* 18px */
     --font-size-2xl: 1.25rem;  /* 20px */
     --font-size-3xl: 1.5rem;   /* 24px */
+
+    --topbar-height: 56px;
+    --smartbar-height: 64px;
+    --main-height: calc(100vh - var(--topbar-height) - var(--smartbar-height));
+    --layout-gutter: 24px;
   }
 
   .dashboard-mode {

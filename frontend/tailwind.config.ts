@@ -33,7 +33,15 @@ export default {
       spacing: {
         sidebar: '64px',
         topbar: '56px',
+        smartbar: '64px',
         panel: '400px',
+        'chat-fab': '48px',
+        'chat-sidebar': '360px',
+        'fab-bottom': '80px',
+        'fab-right': '24px',
+        'layout-gutter': '24px',
+        'right-col-futures': '360px',
+        'right-col-futures-compact': '280px',
       },
       fontSize: {
         xs: ['var(--font-size-xs)', { lineHeight: '1.25rem' }],

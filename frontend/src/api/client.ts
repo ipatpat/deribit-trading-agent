@@ -107,15 +107,21 @@ export function getSmartOrders(activeOnly = true): Promise<SmartOrder[]> {
   return request(`/smart-orders?active_only=${activeOnly}`);
 }
 
+export interface SmartOrderOverrides {
+  t_patience_ms?: number;
+  max_cross_levels?: number;
+  price_limit_pct?: number;
+  price_limit_ticks?: number;
+  price_limit_iv?: number;
+  prefer_maker?: boolean;
+}
+
 export function createSmartOrder(params: {
   instrument_name: string;
   direction: string;
   amount: number;
-  algorithm?: string;
-  patience?: number;
-  price_limit?: number;
-  timeout_ms?: number;
-  prefer_maker?: boolean;
+  intent?: 'standard' | 'urgent';
+  overrides?: SmartOrderOverrides;
 }): Promise<SmartOrder> {
   return request('/smart-orders', {
     method: 'POST',

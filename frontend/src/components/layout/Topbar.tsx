@@ -10,7 +10,6 @@ function Topbar() {
       .then((s) => setEnv(s.env))
       .catch(() => setEnv(''));
 
-    // Poll every 5s to catch env switches
     const interval = setInterval(() => {
       getSettingsStatus()
         .then((s) => setEnv(s.env))

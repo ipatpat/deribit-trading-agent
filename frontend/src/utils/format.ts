@@ -8,6 +8,16 @@ export function formatPrice(value: number | null | undefined, decimals = 2): str
 }
 
 /**
+ * Format a native crypto balance: up to 4 decimals, but trim trailing zeros.
+ * `100` instead of `100.0000`, `99.5` instead of `99.5000`.
+ */
+export function formatNativeBalance(value: number | null | undefined): string {
+  if (value == null || !Number.isFinite(value)) return '-';
+  const fixed = value.toFixed(4);
+  return fixed.includes('.') ? fixed.replace(/\.?0+$/, '') : fixed;
+}
+
+/**
  * Format a number as USD: $1,234.56
  */
 export function formatUsd(value: number): string {

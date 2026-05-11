@@ -66,19 +66,35 @@ export interface AccountSummary {
   session_rpl: number;
 }
 
-/** Maps to the backend Pydantic SmartOrder model */
+export type SmartOrderState =
+  | 'pending'
+  | 'active'
+  | 'escalating'
+  | 'paused'
+  | 'completed'
+  | 'cancelled'
+  | 'market_filled'
+  | 'failed';
+
+export type SmartOrderIntent = 'standard' | 'urgent';
+
+/** Maps to the backend SmartOrder.to_dict() */
 export interface SmartOrder {
   id: string;
   instrument: string;
   direction: 'buy' | 'sell';
   amount: number;
+  intent: SmartOrderIntent | null;
   algorithm: string;
-  state: 'active' | 'triggered' | 'filled' | 'cancelled' | 'error';
+  state: SmartOrderState;
   deribit_order_id: string | null;
   current_price: number | null;
+  current_level: number;
   filled_amount: number;
   amend_count: number;
+  post_only_reject_count: number;
   elapsed_ms: number;
+  t_patience_ms: number | null;
   fee_mode: string | null;
 }
 

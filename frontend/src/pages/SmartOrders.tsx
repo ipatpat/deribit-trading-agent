@@ -2,8 +2,10 @@ import { useEffect, useState, useCallback } from 'react';
 import { Pause, Play, Zap, X } from 'lucide-react';
 import Card from '../components/common/Card';
 import { useSmartOrdersStore } from '../stores/smartOrders';
+import { usePortfolioStore } from '../stores/portfolio';
 import { cancelSmartOrder, smartOrderAction } from '../api/client';
 import { useToastStore } from '../stores/toast';
+import { feeSavedUsd, IntentBadge, LevelBadge } from '../utils/smartOrderFormat';
 
 function formatElapsed(ms: number): string {
   const secs = Math.floor(ms / 1000);
@@ -15,22 +17,31 @@ function formatElapsed(ms: number): string {
 }
 
 const STATUS_BADGE: Record<string, string> = {
+  pending: 'bg-cream-dark text-secondary',
   active: 'bg-profit-bg text-profit',
-  triggered: 'bg-yellow-100 text-yellow-800',
-  filled: 'bg-blue-100 text-blue-800',
+  escalating: 'bg-yellow-100 text-yellow-800',
+  paused: 'bg-cream-dark text-secondary',
+  completed: 'bg-blue-100 text-blue-800',
+  market_filled: 'bg-blue-100 text-blue-800',
   cancelled: 'bg-cream-dark text-secondary',
-  error: 'bg-loss-bg text-loss',
+  failed: 'bg-loss-bg text-loss',
 };
+
+const ACTIVE_STATES = new Set(['pending', 'active', 'escalating', 'paused']);
+const TERMINAL_STATES = new Set(['completed', 'market_filled', 'cancelled', 'failed']);
 
 function SmartOrders() {
   const { orders, loading, fetchOrders, updateOrder, removeOrder } = useSmartOrdersStore();
+  const indexPrices = usePortfolioStore((s) => s.indexPrices);
+  const fetchIndexPrices = usePortfolioStore((s) => s.fetchIndexPrices);
   const [, setTick] = useState(0);
 
   const showToast = useToastStore((s) => s.show);
 
   useEffect(() => {
     fetchOrders();
-  }, [fetchOrders]);
+    fetchIndexPrices();
+  }, [fetchOrders, fetchIndexPrices]);
 
   // Tick every second to update elapsed times
   useEffect(() => {
@@ -57,12 +68,8 @@ function SmartOrders() {
     [removeOrder, updateOrder, showToast],
   );
 
-  const activeOrders = orders.filter(
-    (o) => o.state === 'active' || o.state === 'triggered',
-  );
-  const historyOrders = orders.filter(
-    (o) => o.state === 'filled' || o.state === 'cancelled' || o.state === 'error',
-  );
+  const activeOrders = orders.filter((o) => ACTIVE_STATES.has(o.state));
+  const historyOrders = orders.filter((o) => TERMINAL_STATES.has(o.state));
 
   return (
     <div className="space-y-4">
@@ -90,10 +97,11 @@ function SmartOrders() {
                   <th className="text-left pb-2 pr-3">Instrument</th>
                   <th className="text-left pb-2 pr-3">Direction</th>
                   <th className="text-right pb-2 pr-3">Amount</th>
-                  <th className="text-left pb-2 pr-3">Algorithm</th>
+                  <th className="text-left pb-2 pr-3">Intent</th>
+                  <th className="text-left pb-2 pr-3">Lv</th>
                   <th className="text-left pb-2 pr-3">State</th>
-                  <th className="text-right pb-2 pr-3">Amends</th>
                   <th className="text-right pb-2 pr-3">Elapsed</th>
+                  <th className="text-right pb-2 pr-3">Amends</th>
                   <th className="text-right pb-2">Actions</th>
                 </tr>
               </thead>
@@ -121,7 +129,12 @@ function SmartOrders() {
                       </span>
                     </td>
                     <td className="py-2.5 pr-3 text-right font-mono">{order.amount}</td>
-                    <td className="py-2.5 pr-3 text-secondary">{order.algorithm}</td>
+                    <td className="py-2.5 pr-3">
+                      <IntentBadge intent={order.intent} />
+                    </td>
+                    <td className="py-2.5 pr-3">
+                      <LevelBadge level={order.current_level} />
+                    </td>
                     <td className="py-2.5 pr-3">
                       <span
                         className={`inline-block px-2 py-0.5 rounded text-xs font-medium ${
@@ -131,11 +144,11 @@ function SmartOrders() {
                         {order.state}
                       </span>
                     </td>
-                    <td className="py-2.5 pr-3 text-right font-mono text-secondary">
-                      {order.amend_count}
-                    </td>
                     <td className="py-2.5 pr-3 text-right font-mono text-secondary text-xs">
                       {formatElapsed(order.elapsed_ms)}
+                    </td>
+                    <td className="py-2.5 pr-3 text-right font-mono text-secondary">
+                      {order.amend_count}
                     </td>
                     <td className="py-2.5 text-right">
                       <div className="flex items-center justify-end gap-1">
@@ -191,54 +204,75 @@ function SmartOrders() {
                   <th className="text-left pb-2 pr-3">Instrument</th>
                   <th className="text-left pb-2 pr-3">Direction</th>
                   <th className="text-right pb-2 pr-3">Amount</th>
-                  <th className="text-left pb-2 pr-3">Algorithm</th>
+                  <th className="text-left pb-2 pr-3">Intent</th>
+                  <th className="text-left pb-2 pr-3">Lv</th>
                   <th className="text-left pb-2 pr-3">State</th>
-                  <th className="text-right pb-2 pr-3">Amends</th>
-                  <th className="text-right pb-2">Fee Mode</th>
+                  <th className="text-right pb-2 pr-3">Elapsed</th>
+                  <th className="text-right pb-2 pr-3">Saved</th>
+                  <th className="text-right pb-2">Amends</th>
                 </tr>
               </thead>
               <tbody>
-                {historyOrders.map((order) => (
-                  <tr
-                    key={order.id}
-                    className="border-b border-divider/50 hover:bg-cream/50 transition-colors"
-                  >
-                    <td className="py-2.5 pr-3 font-mono text-xs text-secondary">
-                      {order.id.slice(0, 8)}
-                    </td>
-                    <td className="py-2.5 pr-3 font-medium text-primary">
-                      {order.instrument}
-                    </td>
-                    <td className="py-2.5 pr-3">
-                      <span
-                        className={`inline-block px-2 py-0.5 rounded text-xs font-medium ${
-                          order.direction === 'buy'
-                            ? 'bg-profit-bg text-profit'
-                            : 'bg-loss-bg text-loss'
-                        }`}
-                      >
-                        {order.direction.toUpperCase()}
-                      </span>
-                    </td>
-                    <td className="py-2.5 pr-3 text-right font-mono">{order.amount}</td>
-                    <td className="py-2.5 pr-3 text-secondary">{order.algorithm}</td>
-                    <td className="py-2.5 pr-3">
-                      <span
-                        className={`inline-block px-2 py-0.5 rounded text-xs font-medium ${
-                          STATUS_BADGE[order.state] ?? 'bg-cream text-secondary'
-                        }`}
-                      >
-                        {order.state}
-                      </span>
-                    </td>
-                    <td className="py-2.5 pr-3 text-right font-mono text-secondary">
-                      {order.amend_count}
-                    </td>
-                    <td className="py-2.5 text-right font-mono text-secondary">
-                      {order.fee_mode ?? '--'}
-                    </td>
-                  </tr>
-                ))}
+                {historyOrders.map((order) => {
+                  const filled =
+                    order.state === 'completed' || order.state === 'market_filled';
+                  const saved = feeSavedUsd(order, indexPrices);
+                  const showSaved =
+                    filled && saved !== null && saved >= 0.01;
+                  return (
+                    <tr
+                      key={order.id}
+                      className="border-b border-divider/50 hover:bg-cream/50 transition-colors"
+                    >
+                      <td className="py-2.5 pr-3 font-mono text-xs text-secondary">
+                        {order.id.slice(0, 8)}
+                      </td>
+                      <td className="py-2.5 pr-3 font-medium text-primary">
+                        {order.instrument}
+                      </td>
+                      <td className="py-2.5 pr-3">
+                        <span
+                          className={`inline-block px-2 py-0.5 rounded text-xs font-medium ${
+                            order.direction === 'buy'
+                              ? 'bg-profit-bg text-profit'
+                              : 'bg-loss-bg text-loss'
+                          }`}
+                        >
+                          {order.direction.toUpperCase()}
+                        </span>
+                      </td>
+                      <td className="py-2.5 pr-3 text-right font-mono">{order.amount}</td>
+                      <td className="py-2.5 pr-3">
+                        <IntentBadge intent={order.intent} />
+                      </td>
+                      <td className="py-2.5 pr-3">
+                        {filled ? <LevelBadge level={order.current_level} /> : <span className="text-secondary">—</span>}
+                      </td>
+                      <td className="py-2.5 pr-3">
+                        <span
+                          className={`inline-block px-2 py-0.5 rounded text-xs font-medium ${
+                            STATUS_BADGE[order.state] ?? 'bg-cream text-secondary'
+                          }`}
+                        >
+                          {order.state}
+                        </span>
+                      </td>
+                      <td className="py-2.5 pr-3 text-right font-mono text-secondary text-xs">
+                        {formatElapsed(order.elapsed_ms)}
+                      </td>
+                      <td className="py-2.5 pr-3 text-right font-mono text-xs">
+                        {showSaved ? (
+                          <span className="text-profit">${saved!.toFixed(2)}</span>
+                        ) : (
+                          <span className="text-secondary">—</span>
+                        )}
+                      </td>
+                      <td className="py-2.5 text-right font-mono text-secondary">
+                        {order.amend_count}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>

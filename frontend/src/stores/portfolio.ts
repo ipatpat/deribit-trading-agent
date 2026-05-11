@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import type { Position, PortfolioSnapshot } from '../types/api';
-import { getPortfolioSnapshot, getPositions } from '../api/client';
+import { getPortfolioSnapshot, getPortfolioOverview } from '../api/client';
 
 interface PortfolioState {
   equity: number;
@@ -14,10 +14,12 @@ interface PortfolioState {
     net_theta: number;
     net_vega: number;
   };
+  indexPrices: Record<string, number>;
   loading: boolean;
   error: string | null;
 
   fetchSnapshot: () => Promise<void>;
+  fetchIndexPrices: () => Promise<void>;
   updateFromWs: (data: Record<string, unknown>) => void;
 }
 
@@ -28,6 +30,7 @@ export const usePortfolioStore = create<PortfolioState>((set) => ({
   realizedPnl: 0,
   positions: [],
   greeksSummary: { net_delta: 0, net_gamma: 0, net_theta: 0, net_vega: 0 },
+  indexPrices: {},
   loading: false,
   error: null,
 
@@ -46,6 +49,15 @@ export const usePortfolioStore = create<PortfolioState>((set) => ({
       });
     } catch (err) {
       set({ error: (err as Error).message, loading: false });
+    }
+  },
+
+  fetchIndexPrices: async () => {
+    try {
+      const overview = await getPortfolioOverview();
+      set({ indexPrices: overview.index_prices ?? {} });
+    } catch {
+      // silently — indexPrices stays at last good value
     }
   },
 

@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from 'react';
-import { Eye, EyeOff } from 'lucide-react';
+import { Eye, EyeOff, Sparkles, Check, X as XIcon, RefreshCw } from 'lucide-react';
 import * as Slider from '@radix-ui/react-slider';
 import Card from '../components/common/Card';
 import Skeleton from '../components/common/Skeleton';
@@ -9,8 +9,20 @@ import {
   switchEnv,
   clearKeys,
 } from '../api/client';
+import {
+  getAiAgentConfig,
+  setAiAgentConfig,
+  deleteAiAgentConfig,
+  testAiAgentConnection,
+  listAiAgentModels,
+  type AiAgentConfigPublic,
+  type TestConnectionResult,
+} from '../api/aiAgent';
 import { useSettingsStore, getReadableIntervals } from '../stores/settings';
 import { useToastStore } from '../stores/toast';
+
+const DEFAULT_AI_ENDPOINT = 'https://api.deepseek.com';
+const DEFAULT_AI_MODEL = 'deepseek-chat';
 
 interface SettingsStatusData {
   env: string;
@@ -31,6 +43,266 @@ function formatUptime(ms: number): string {
   const hours = Math.floor(totalMinutes / 60);
   const minutes = totalMinutes % 60;
   return `${hours}h ${minutes}m`;
+}
+
+function AiAgentCard() {
+  const [cfg, setCfg] = useState<AiAgentConfigPublic | null>(null);
+  const [endpoint, setEndpoint] = useState(DEFAULT_AI_ENDPOINT);
+  const [model, setModel] = useState<string>(DEFAULT_AI_MODEL);
+  const [apiKey, setApiKey] = useState('');
+  const [showKey, setShowKey] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<TestConnectionResult | null>(null);
+  const [availableModels, setAvailableModels] = useState<string[]>([]);
+  const [fetchingModels, setFetchingModels] = useState(false);
+  const [modelFetchError, setModelFetchError] = useState<string | null>(null);
+  const showToast = useToastStore((s) => s.show);
+
+  const refresh = useCallback(async () => {
+    try {
+      const data = await getAiAgentConfig();
+      setCfg(data);
+      if (data.endpoint) setEndpoint(data.endpoint);
+      if (data.model) setModel(data.model);
+    } catch {
+      showToast('error', 'Failed to fetch AI agent config');
+    }
+  }, [showToast]);
+
+  useEffect(() => {
+    void refresh();
+    // Auto-scroll to anchor on first mount
+    if (window.location.hash === '#ai-agent') {
+      requestAnimationFrame(() => {
+        document.getElementById('ai-agent')?.scrollIntoView({ behavior: 'smooth' });
+      });
+    }
+  }, [refresh]);
+
+  const handleSave = async () => {
+    if (!endpoint.trim() || !model.trim() || !apiKey.trim()) {
+      showToast('error', 'Endpoint, model, and API key are all required');
+      return;
+    }
+    setSaving(true);
+    try {
+      await setAiAgentConfig({ endpoint, model, api_key: apiKey });
+      showToast('success', 'AI agent configured');
+      setApiKey('');
+      await refresh();
+    } catch (err) {
+      showToast('error', `Failed to save: ${(err as Error).message}`);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleTest = async () => {
+    if (!endpoint.trim() || !model.trim() || !apiKey.trim()) {
+      setTestResult({ ok: false, error: 'All three fields required to test' });
+      return;
+    }
+    setTesting(true);
+    setTestResult(null);
+    try {
+      const result = await testAiAgentConnection({ endpoint, model, api_key: apiKey });
+      setTestResult(result);
+      // Auto-fetch model list on successful test (saves an extra click)
+      if (result.ok && availableModels.length === 0) {
+        void handleFetchModels();
+      }
+    } catch (err) {
+      setTestResult({ ok: false, error: (err as Error).message });
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  const handleFetchModels = useCallback(async () => {
+    if (!endpoint.trim() || !apiKey.trim()) {
+      setModelFetchError('Endpoint and API key required');
+      return;
+    }
+    setFetchingModels(true);
+    setModelFetchError(null);
+    try {
+      const result = await listAiAgentModels(endpoint, apiKey);
+      if (result.ok && result.models) {
+        setAvailableModels(result.models);
+        // If current model isn't in the list, pick the first available
+        if (result.models.length > 0 && !result.models.includes(model)) {
+          setModel(result.models[0]);
+        }
+      } else {
+        setModelFetchError(result.error || 'Failed to fetch models');
+      }
+    } catch (err) {
+      setModelFetchError((err as Error).message);
+    } finally {
+      setFetchingModels(false);
+    }
+  }, [endpoint, apiKey, model]);
+
+  const handleClear = async () => {
+    if (!window.confirm('Clear AI agent config? This will reset endpoint, model, and API key.')) return;
+    try {
+      await deleteAiAgentConfig();
+      setApiKey('');
+      setEndpoint(DEFAULT_AI_ENDPOINT);
+      setModel(DEFAULT_AI_MODEL);
+      setAvailableModels([]);
+      setTestResult(null);
+      showToast('success', 'AI agent config cleared');
+      await refresh();
+    } catch (err) {
+      showToast('error', `Failed to clear: ${(err as Error).message}`);
+    }
+  };
+
+  const envFallback = cfg?.env_fallback_available && !cfg?.api_key_set;
+
+  return (
+    <Card>
+      <div id="ai-agent" className="text-overline text-secondary uppercase tracking-wider font-semibold mb-4 flex items-center gap-2">
+        <Sparkles size={14} className="text-accent" />
+        AI Agent
+      </div>
+
+      {envFallback && (
+        <div className="mb-3 p-2 rounded bg-accent/[0.06] border border-accent/20 text-xs text-primary">
+          Using env vars (override here to use Settings).
+        </div>
+      )}
+
+      <div className="space-y-3">
+        <div>
+          <label className="block text-overline text-secondary uppercase tracking-wider font-semibold mb-1">
+            Endpoint URL
+          </label>
+          <input
+            type="text"
+            value={endpoint}
+            onChange={(e) => setEndpoint(e.target.value)}
+            placeholder={DEFAULT_AI_ENDPOINT}
+            className="w-full py-2 px-3 border border-divider rounded-lg font-mono text-primary text-sm focus:outline-none focus:border-accent transition-colors"
+          />
+        </div>
+
+        <div>
+          <label className="block text-overline text-secondary uppercase tracking-wider font-semibold mb-1">
+            Model
+          </label>
+          <div className="flex gap-2">
+            {availableModels.length > 0 ? (
+              <select
+                value={model}
+                onChange={(e) => setModel(e.target.value)}
+                className="flex-1 py-2 px-3 border border-divider rounded-lg font-mono text-primary text-sm focus:outline-none focus:border-accent transition-colors bg-white"
+              >
+                {availableModels.map((m) => (
+                  <option key={m} value={m}>{m}</option>
+                ))}
+                {model && !availableModels.includes(model) && (
+                  <option value={model}>{model} (current)</option>
+                )}
+              </select>
+            ) : (
+              <input
+                type="text"
+                value={model}
+                onChange={(e) => setModel(e.target.value)}
+                placeholder={DEFAULT_AI_MODEL}
+                className="flex-1 py-2 px-3 border border-divider rounded-lg font-mono text-primary text-sm focus:outline-none focus:border-accent transition-colors"
+              />
+            )}
+            <button
+              type="button"
+              onClick={handleFetchModels}
+              disabled={fetchingModels || !endpoint.trim() || !apiKey.trim()}
+              className="px-3 py-2 rounded-lg border border-divider text-secondary hover:text-primary hover:bg-cream transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              title="Fetch available models from the endpoint"
+            >
+              <RefreshCw size={14} className={fetchingModels ? 'animate-spin' : ''} />
+            </button>
+          </div>
+          {modelFetchError && (
+            <p className="mt-1 text-overline text-loss">{modelFetchError}</p>
+          )}
+          {availableModels.length > 0 && (
+            <p className="mt-1 text-overline text-secondary">
+              {availableModels.length} models available
+            </p>
+          )}
+        </div>
+
+        <div>
+          <label className="block text-overline text-secondary uppercase tracking-wider font-semibold mb-1">
+            API Key {cfg?.api_key_set && <span className="text-secondary normal-case font-normal">(saved — fill to replace)</span>}
+          </label>
+          <div className="relative">
+            <input
+              type={showKey ? 'text' : 'password'}
+              value={apiKey}
+              onChange={(e) => setApiKey(e.target.value)}
+              placeholder={cfg?.api_key_set ? '••••••••' : 'Enter API key'}
+              className="w-full py-2 px-3 pr-10 border border-divider rounded-lg font-mono text-primary text-sm focus:outline-none focus:border-accent transition-colors"
+            />
+            <button
+              type="button"
+              onClick={() => setShowKey((v) => !v)}
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-secondary hover:text-primary transition-colors"
+              aria-label={showKey ? 'Hide key' : 'Show key'}
+            >
+              {showKey ? <EyeOff size={16} /> : <Eye size={16} />}
+            </button>
+          </div>
+        </div>
+
+        <div className="flex gap-2 items-center">
+          <button
+            onClick={handleSave}
+            disabled={saving}
+            className="flex-1 py-2 rounded-lg bg-primary text-white text-xs font-semibold hover:bg-primary/90 transition-colors disabled:opacity-40"
+          >
+            {saving ? 'Saving...' : 'Save'}
+          </button>
+          <button
+            onClick={handleTest}
+            disabled={testing}
+            className="px-4 py-2 rounded-lg border border-divider text-primary text-xs font-semibold hover:bg-cream transition-colors disabled:opacity-40"
+          >
+            {testing ? 'Testing...' : 'Test connection'}
+          </button>
+          {cfg?.api_key_set && (
+            <button
+              onClick={handleClear}
+              className="px-4 py-2 rounded-lg border border-loss/30 text-loss text-xs font-semibold hover:bg-loss/5 transition-colors"
+            >
+              Clear
+            </button>
+          )}
+        </div>
+
+        {testResult && (
+          <div
+            className={`flex items-center gap-2 p-2 rounded text-xs ${
+              testResult.ok
+                ? 'bg-profit-bg text-profit border border-profit/20'
+                : 'bg-loss-bg text-loss border border-loss/20'
+            }`}
+          >
+            {testResult.ok ? <Check size={14} /> : <XIcon size={14} />}
+            <span className="font-medium">
+              {testResult.ok
+                ? `Connected (${testResult.model ?? model})`
+                : `${testResult.code ?? 'failed'}: ${testResult.error ?? 'unknown'}`}
+            </span>
+          </div>
+        )}
+      </div>
+    </Card>
+  );
 }
 
 function Settings() {
@@ -370,6 +642,9 @@ function Settings() {
           </div>
         )}
       </Card>
+
+      {/* Card 3: AI Agent Configuration */}
+      <AiAgentCard />
     </div>
   );
 }

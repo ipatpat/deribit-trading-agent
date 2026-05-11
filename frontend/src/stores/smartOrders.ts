@@ -28,7 +28,7 @@ export const useSmartOrdersStore = create<SmartOrdersState>((set) => ({
   fetchOrders: async () => {
     set({ loading: true, error: null });
     try {
-      const orders = await getSmartOrders();
+      const orders = await getSmartOrders(false);
       set({ orders, loading: false });
     } catch (err) {
       set({ error: (err as Error).message, loading: false });
