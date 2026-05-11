@@ -93,15 +93,17 @@ describe('useChatStore', () => {
     expect(useChatStore.getState().pageContext.instrument).toBeUndefined();
   });
 
-  it('clearMessages empties the history', () => {
+  it('clearMessages empties the history and resets error', () => {
     useChatStore.getState().appendMessage({
       id: 'm1',
       role: 'user',
       content: [{ type: 'text', text: 'x' }],
       ts: 0,
     });
+    useChatStore.setState({ error: 'something failed' });
     useChatStore.getState().clearMessages();
     expect(useChatStore.getState().messages).toEqual([]);
+    expect(useChatStore.getState().error).toBeNull();
   });
 
   it('persist partializes only open and messages (not draft / tools)', () => {

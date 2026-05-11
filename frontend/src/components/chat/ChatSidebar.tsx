@@ -1,12 +1,16 @@
-import { useEffect, useRef, useState } from 'react';
-import { X, Send, Sparkles, StopCircle } from 'lucide-react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { X, Send, Sparkles, StopCircle, Trash2 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { useChatStore, type ChatMessage, type ContentBlock } from '../../stores/chat';
 import { useSmartOrdersStore } from '../../stores/smartOrders';
 import { getAiAgentConfig } from '../../api/aiAgent';
 import ChatColdStart from './ChatColdStart';
+import ClearChatModal from './ClearChatModal';
+import ThinkingPlaceholder from './ThinkingPlaceholder';
 import ToolUseCard from './ToolUseCard';
+import { AI_NAME } from './identity';
+import { shouldSendOnEnter } from './keyboardUtils';
 
 function MessageBubble({ message }: { message: ChatMessage }) {
   const isUser = message.role === 'user';
@@ -23,7 +27,6 @@ function MessageBubble({ message }: { message: ChatMessage }) {
       <div className={`max-w-[90%] ${isUser ? 'bg-primary text-white' : 'bg-cream'} rounded-lg px-3 py-2 text-sm`}>
         {message.content.map((block, idx) => {
           if (block.type === 'text') {
-            // User messages are plain text; assistant messages use markdown.
             if (isUser) {
               return (
                 <div key={idx} className="whitespace-pre-wrap break-words">
@@ -84,7 +87,6 @@ function MessageBubble({ message }: { message: ChatMessage }) {
               />
             );
           }
-          // tool_result is rendered via the matched tool_use card
           return null;
         })}
       </div>
@@ -101,14 +103,20 @@ function ChatSidebar() {
   const errorMsg = useChatStore((s) => s.error);
   const sendMessage = useChatStore((s) => s.sendMessage);
   const abort = useChatStore((s) => s.abort);
+  const clearMessages = useChatStore((s) => s.clearMessages);
 
   const smartBarVisible = useSmartOrdersStore((s) => s.orders.length > 0);
 
   const [configLoading, setConfigLoading] = useState(true);
   const [configured, setConfigured] = useState(false);
-  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const [showClearModal, setShowClearModal] = useState(false);
 
-  // Check AI agent config on mount; refresh after loading state settles
+  const scrollerRef = useRef<HTMLDivElement>(null);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const firstMountRef = useRef(true);
+
+  // Check AI agent config on mount
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -128,10 +136,36 @@ function ChatSidebar() {
     };
   }, []);
 
-  // Auto-scroll to bottom on new messages
+  // First mount: instant jump to bottom (paint-synchronous, no animation).
+  // Subsequent message changes: smooth scroll via the other effect below.
+  useLayoutEffect(() => {
+    const sc = scrollerRef.current;
+    if (sc && firstMountRef.current) {
+      sc.scrollTop = sc.scrollHeight;
+      firstMountRef.current = false;
+    }
+  }, [configured, configLoading]);
+
+  // New messages or loading state: smooth scroll. Skip first mount (handled above).
   useEffect(() => {
+    if (firstMountRef.current) return;
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
   }, [messages.length, loading]);
+
+  // Auto-focus the textarea when chat opens and is ready for input.
+  useEffect(() => {
+    if (configured && !configLoading) {
+      textareaRef.current?.focus();
+    }
+  }, [configured, configLoading]);
+
+  // Auto-grow the textarea to fit content (capped via CSS max-height).
+  useEffect(() => {
+    const ta = textareaRef.current;
+    if (!ta) return;
+    ta.style.height = 'auto';
+    ta.style.height = `${ta.scrollHeight}px`;
+  }, [draft]);
 
   const handleSend = () => {
     if (!draft.trim() || loading) return;
@@ -139,11 +173,24 @@ function ChatSidebar() {
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
+    if (shouldSendOnEnter(e)) {
       e.preventDefault();
       handleSend();
     }
   };
+
+  // Show thinking placeholder when streaming has started but no content
+  // has been emitted yet (most visible during deepseek-reasoner's CoT).
+  const lastMsg = messages[messages.length - 1];
+  const showThinking =
+    loading
+    && lastMsg
+    && lastMsg.role === 'assistant'
+    && lastMsg.content.length === 0;
+
+  // Render messages, but suppress the empty placeholder assistant message
+  // when ThinkingPlaceholder is being shown instead.
+  const visibleMessages = showThinking ? messages.slice(0, -1) : messages;
 
   return (
     <aside
@@ -157,16 +204,29 @@ function ChatSidebar() {
       <header className="h-14 px-4 flex items-center justify-between border-b border-divider flex-shrink-0">
         <span className="flex items-center gap-2 text-sm font-semibold text-primary">
           <Sparkles size={14} className="text-accent" />
-          AI Assistant
+          {AI_NAME}
         </span>
-        <button
-          type="button"
-          onClick={close}
-          aria-label="Close chat"
-          className="p-1.5 rounded hover:bg-cream text-secondary hover:text-primary transition-colors"
-        >
-          <X size={16} />
-        </button>
+        <div className="flex items-center gap-1">
+          {messages.length > 0 && (
+            <button
+              type="button"
+              onClick={() => setShowClearModal(true)}
+              aria-label="Clear chat"
+              title="Clear chat"
+              className="p-1.5 rounded hover:bg-cream text-secondary hover:text-primary transition-colors"
+            >
+              <Trash2 size={16} />
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={close}
+            aria-label="Close chat"
+            className="p-1.5 rounded hover:bg-cream text-secondary hover:text-primary transition-colors"
+          >
+            <X size={16} />
+          </button>
+        </div>
       </header>
 
       {configLoading ? (
@@ -177,14 +237,15 @@ function ChatSidebar() {
         <ChatColdStart />
       ) : (
         <>
-          <div className="flex-1 min-h-0 overflow-y-auto p-3 space-y-3">
+          <div ref={scrollerRef} className="flex-1 min-h-0 overflow-y-auto p-3 space-y-3">
             {messages.length === 0 ? (
               <div className="text-secondary text-sm p-8 text-center">
                 Ask me about market data, your portfolio, or option strategies.
               </div>
             ) : (
-              messages.map((m) => <MessageBubble key={m.id} message={m} />)
+              visibleMessages.map((m) => <MessageBubble key={m.id} message={m} />)
             )}
+            {showThinking && <ThinkingPlaceholder />}
             {errorMsg && (
               <div className="text-loss text-xs bg-loss-bg border border-loss/20 rounded-lg p-2">
                 {errorMsg}
@@ -196,13 +257,14 @@ function ChatSidebar() {
           <div className="border-t border-divider p-3 flex-shrink-0">
             <div className="flex items-end gap-2">
               <textarea
+                ref={textareaRef}
                 value={draft}
                 onChange={(e) => setDraft(e.target.value)}
                 onKeyDown={handleKeyDown}
                 placeholder={loading ? 'Streaming...' : 'Ask anything (Enter to send)'}
                 rows={2}
                 disabled={loading}
-                className="flex-1 resize-none border border-divider rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-accent disabled:bg-cream disabled:text-secondary"
+                className="flex-1 resize-none border border-divider rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-accent disabled:bg-cream disabled:text-secondary min-h-[60px] max-h-[160px] overflow-y-auto"
               />
               {loading ? (
                 <button
@@ -227,6 +289,17 @@ function ChatSidebar() {
             </div>
           </div>
         </>
+      )}
+
+      {showClearModal && (
+        <ClearChatModal
+          count={messages.length}
+          onConfirm={() => {
+            clearMessages();
+            setShowClearModal(false);
+          }}
+          onCancel={() => setShowClearModal(false)}
+        />
       )}
     </aside>
   );

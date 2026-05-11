@@ -27,4 +27,12 @@ describe('ChatColdStart', () => {
     const link = screen.getByRole('link', { name: /open settings/i });
     expect(link.getAttribute('href')).toBe('/settings#ai-agent');
   });
+
+  it('shows the "Try asking…" hint with 3 sample prompts', () => {
+    renderWithRouter();
+    expect(screen.getByText(/try asking/i)).toBeTruthy();
+    expect(screen.getByText(/btc perp price/i)).toBeTruthy();
+    expect(screen.getByText(/btc option market/i)).toBeTruthy();
+    expect(screen.getByText(/long straddle/i)).toBeTruthy();
+  });
 });

@@ -1,6 +1,12 @@
 import { Key } from 'lucide-react';
 import { Link } from 'react-router-dom';
 
+const SAMPLE_PROMPTS = [
+  "What's the BTC perp price?",
+  "Show me the BTC option market",
+  "Analyze a long straddle on BTC",
+];
+
 /**
  * Shown inside ChatSidebar when AI Agent is not configured (missing
  * endpoint / model / api_key). Stays scoped to the sidebar — never a
@@ -24,6 +30,19 @@ function ChatColdStart() {
       >
         Open Settings →
       </Link>
+
+      <div className="mt-8 w-full max-w-[260px] text-left">
+        <p className="text-overline text-secondary uppercase tracking-wider font-semibold mb-2">
+          Try asking…
+        </p>
+        <ul className="space-y-1.5">
+          {SAMPLE_PROMPTS.map((p) => (
+            <li key={p} className="text-xs text-secondary italic">
+              · "{p}"
+            </li>
+          ))}
+        </ul>
+      </div>
     </div>
   );
 }
