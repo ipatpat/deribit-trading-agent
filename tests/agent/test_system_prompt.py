@@ -14,6 +14,19 @@ def test_role_first_section():
     assert "Not financial advice" not in prompt
 
 
+def test_role_contains_vida_name():
+    """ROLE section must introduce the agent as Vida."""
+    prompt = build_system_prompt({"route": "/", "instrument": None})
+    role_section = prompt.split("GOAL")[0]
+    assert "Vida" in role_section, "ROLE section must mention the Vida name"
+
+
+def test_vida_not_duplicated_in_tier1():
+    """Vida is introduced in ROLE; should not be repeated in Tier 1 knowledge
+    (avoid wasted tokens on every turn)."""
+    assert "Vida" not in TIER_1_KNOWLEDGE
+
+
 def test_required_sections_present():
     prompt = build_system_prompt()
     for section in (
