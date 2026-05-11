@@ -68,6 +68,15 @@ class KeyStore:
                     PRIMARY KEY (name, env)
                 )
             """)
+            # AI Agent config — single namespace, key-value with encrypted values.
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS agent_config (
+                    namespace TEXT NOT NULL,
+                    key TEXT NOT NULL,
+                    value_encrypted BLOB NOT NULL,
+                    PRIMARY KEY (namespace, key)
+                )
+            """)
 
     def add_key(
         self,
@@ -176,3 +185,74 @@ class KeyStore:
             )
             for r in rows
         ]
+
+    # ── AI Agent config (ai_agent namespace) ─────────────────────────────────
+    _AI_AGENT_NS = "ai_agent"
+    _AI_AGENT_KEYS = ("endpoint", "model", "api_key")
+
+    def get_ai_agent_config(self) -> dict[str, str] | None:
+        """Return decrypted AI agent config dict, or None if not configured.
+
+        Returns dict with keys: endpoint, model, api_key. Returns None if any
+        of the three is missing.
+        """
+        with sqlite3.connect(self._db_path) as conn:
+            rows = conn.execute(
+                "SELECT key, value_encrypted FROM agent_config WHERE namespace = ?",
+                (self._AI_AGENT_NS,),
+            ).fetchall()
+        if not rows:
+            return None
+        cfg = {row[0]: self._fernet.decrypt(row[1]).decode() for row in rows}
+        if not all(k in cfg for k in self._AI_AGENT_KEYS):
+            return None
+        return cfg
+
+    def set_ai_agent_config(self, endpoint: str, model: str, api_key: str) -> None:
+        """Encrypt and store AI agent config."""
+        with sqlite3.connect(self._db_path) as conn:
+            for key, value in (("endpoint", endpoint), ("model", model), ("api_key", api_key)):
+                encrypted = self._fernet.encrypt(value.encode())
+                conn.execute(
+                    """INSERT OR REPLACE INTO agent_config
+                       (namespace, key, value_encrypted) VALUES (?, ?, ?)""",
+                    (self._AI_AGENT_NS, key, encrypted),
+                )
+        logger.info("AI agent config saved (model=%s)", model)
+
+    def has_ai_agent_api_key(self) -> bool:
+        """Quick check whether api_key is set (for /settings/ai-agent GET)."""
+        with sqlite3.connect(self._db_path) as conn:
+            row = conn.execute(
+                "SELECT 1 FROM agent_config WHERE namespace = ? AND key = ?",
+                (self._AI_AGENT_NS, "api_key"),
+            ).fetchone()
+        return row is not None
+
+    def get_ai_agent_public(self) -> dict[str, str | bool | None]:
+        """Return non-secret AI agent config for frontend display.
+
+        Returns: {endpoint: str | None, model: str | None, api_key_set: bool}
+        """
+        with sqlite3.connect(self._db_path) as conn:
+            rows = conn.execute(
+                "SELECT key, value_encrypted FROM agent_config WHERE namespace = ?",
+                (self._AI_AGENT_NS,),
+            ).fetchall()
+        cfg: dict[str, str] = {}
+        for row in rows:
+            cfg[row[0]] = self._fernet.decrypt(row[1]).decode()
+        return {
+            "endpoint": cfg.get("endpoint"),
+            "model": cfg.get("model"),
+            "api_key_set": "api_key" in cfg,
+        }
+
+    def clear_ai_agent_config(self) -> None:
+        """Delete all AI agent config rows."""
+        with sqlite3.connect(self._db_path) as conn:
+            conn.execute(
+                "DELETE FROM agent_config WHERE namespace = ?",
+                (self._AI_AGENT_NS,),
+            )
+        logger.info("AI agent config cleared")

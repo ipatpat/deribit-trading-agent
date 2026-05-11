@@ -4,11 +4,13 @@ import asyncio
 import json
 import logging
 import time
-from typing import Any
+import warnings
+from typing import Any, Literal
 
-from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
 
@@ -32,16 +34,89 @@ class OrderRequest(BaseModel):
     label: str | None = None
 
 
+_OVERRIDE_KEYS = {
+    "t_patience_ms",
+    "max_cross_levels",
+    "price_limit_pct",
+    "price_limit_ticks",
+    "price_limit_iv",
+    "prefer_maker",
+}
+
+
 class SmartOrderRequest(BaseModel):
+    """Create-SmartOrder request body.
+
+    Intent path (preferred): pass `intent` ("standard" | "urgent") with optional
+    `overrides` dict tuning t_patience_ms / max_cross_levels / price_limit_*.
+
+    Legacy path (deprecated, kept 1 minor version): pass `algorithm` +
+    `algo_params`, or `patience` for the old TickChaser/TimedEscalation flow.
+    """
+
     instrument_name: str
     direction: str
     amount: float
-    algorithm: str = "tick-chaser"
-    algo_params: dict = {}
+
+    # Intent path
+    intent: Literal["standard", "urgent"] | None = None
+    overrides: dict[str, Any] | None = None
+
+    # Legacy path (deprecated)
+    algorithm: str | None = None
+    algo_params: dict = Field(default_factory=dict)
+    patience: float | None = None
     price_limit: float | None = None
-    timeout_ms: int | None = 120_000
+    timeout_ms: int | None = None
     prefer_maker: bool = True
-    patience: float = 0.5
+
+
+def _build_smart_order_config(req: SmartOrderRequest) -> SmartOrderConfig:
+    """Translate request into SmartOrderConfig, handling intent + legacy paths."""
+    # Legacy path: explicit algorithm name takes precedence (kept for 1 minor version)
+    if req.algorithm is not None:
+        warnings.warn(
+            "POST /api/v1/smart-orders: 'algorithm' field is deprecated; "
+            "use 'intent' (standard|urgent) with optional 'overrides'.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return SmartOrderConfig(
+            instrument_name=req.instrument_name,
+            direction=req.direction,
+            amount=req.amount,
+            algorithm=req.algorithm,
+            algo_params=req.algo_params,
+            price_limit=req.price_limit,
+            timeout_ms=req.timeout_ms,
+            prefer_maker=req.prefer_maker,
+        )
+
+    # Legacy path: only `patience` provided → from_legacy adapter (also deprecated)
+    if req.intent is None and req.patience is not None:
+        return SmartOrderConfig.from_legacy(
+            instrument_name=req.instrument_name,
+            direction=req.direction,
+            amount=req.amount,
+            patience=req.patience,
+            prefer_maker=req.prefer_maker,
+        )
+
+    # Intent path
+    intent = req.intent or "standard"
+    overrides = req.overrides or {}
+    unknown = set(overrides) - _OVERRIDE_KEYS
+    if unknown:
+        raise HTTPException(
+            400, f"Unknown overrides keys: {sorted(unknown)}. Allowed: {sorted(_OVERRIDE_KEYS)}"
+        )
+    return SmartOrderConfig(
+        instrument_name=req.instrument_name,
+        direction=req.direction,
+        amount=req.amount,
+        intent=intent,
+        **overrides,
+    )
 
 
 class SmartOrderActionRequest(BaseModel):
@@ -504,7 +579,7 @@ def create_rest_app(
     @app.get("/api/v1/positions")
     async def get_positions(currency: str = Query("BTC")) -> list[dict[str, Any]]:
         positions = await trading.get_positions(currency)
-        return [p.model_dump() for p in positions]
+        return [p.model_dump() for p in positions if p.size > 0]
 
     # ── Portfolio overview (multi-currency) ──────────────────────────
 
@@ -527,8 +602,11 @@ def create_rest_app(
         eth_equity = eth_raw.get("equity", 0)
         total_usd = btc_equity * btc_price + eth_equity * eth_price
 
-        # Enrich positions with leverage
-        all_positions = [p.model_dump() for p in btc_pos] + [p.model_dump() for p in eth_pos]
+        # Enrich positions with leverage; skip closed / net-zero positions
+        all_positions = (
+            [p.model_dump() for p in btc_pos if p.size > 0]
+            + [p.model_dump() for p in eth_pos if p.size > 0]
+        )
 
         return {
             "accounts": {
@@ -590,17 +668,10 @@ def create_rest_app(
     async def create_smart_order(req: SmartOrderRequest) -> dict[str, Any]:
         if not smart_engine:
             raise HTTPException(503, "SmartOrderEngine not available")
-        config = SmartOrderConfig(
-            instrument_name=req.instrument_name,
-            direction=req.direction,
-            amount=req.amount,
-            algorithm=req.algorithm,
-            algo_params=req.algo_params,
-            price_limit=req.price_limit,
-            timeout_ms=req.timeout_ms,
-            prefer_maker=req.prefer_maker,
-            patience=req.patience,
-        )
+        try:
+            config = _build_smart_order_config(req)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
         try:
             so = await smart_engine.create_smart_order(config)
             return so.to_dict()
@@ -844,5 +915,145 @@ def create_rest_app(
             raise HTTPException(503, "Not available")
         deleted = await container.db.clear_private_data(env_str)
         return {"status": "cleared", "env": env_str, "rows_deleted": deleted}
+
+    # ── AI Agent: settings + test + chat ─────────────────────────────────
+    @app.get("/api/v1/settings/ai-agent")
+    async def get_ai_agent_settings() -> dict[str, Any]:
+        """Return public AI agent config (no api_key)."""
+        from .agent.llm_client import has_env_api_key
+        if not container or not container.key_store:
+            return {
+                "endpoint": None, "model": None,
+                "api_key_set": False, "env_fallback_available": has_env_api_key(),
+            }
+        cfg = container.key_store.get_ai_agent_public()
+        cfg["env_fallback_available"] = has_env_api_key() if not cfg.get("api_key_set") else False
+        return cfg
+
+    @app.post("/api/v1/settings/ai-agent")
+    async def set_ai_agent_settings(body: dict[str, Any]) -> dict[str, Any]:
+        """Save AI agent config (encrypted)."""
+        endpoint = body.get("endpoint", "").strip()
+        model = body.get("model", "").strip()
+        api_key = body.get("api_key", "").strip()
+        if not (endpoint and model and api_key):
+            raise HTTPException(400, "endpoint, model, and api_key are all required")
+        if not container or not container.key_store:
+            raise HTTPException(503, "KeyStore not available")
+        container.key_store.set_ai_agent_config(endpoint, model, api_key)
+        return {"ok": True, "api_key_set": True}
+
+    @app.delete("/api/v1/settings/ai-agent")
+    async def clear_ai_agent_settings() -> dict[str, Any]:
+        """Clear AI agent config."""
+        if not container or not container.key_store:
+            raise HTTPException(503, "KeyStore not available")
+        container.key_store.clear_ai_agent_config()
+        return {"ok": True}
+
+    @app.post("/api/v1/agent/test")
+    async def test_ai_agent_connection(body: dict[str, Any]) -> dict[str, Any]:
+        """Minimal 1-token chat completion to verify endpoint+model+key."""
+        from .agent.loop import test_connection as _test
+        endpoint = body.get("endpoint", "").strip()
+        model = body.get("model", "").strip()
+        api_key = body.get("api_key", "").strip()
+        if not (endpoint and model and api_key):
+            raise HTTPException(400, "endpoint, model, and api_key are all required")
+        return await _test(endpoint=endpoint, model=model, api_key=api_key)
+
+    @app.post("/api/v1/agent/list-models")
+    async def list_ai_agent_models(body: dict[str, Any]) -> dict[str, Any]:
+        """Fetch the provider's available model list via OpenAI-compatible /v1/models."""
+        from .agent.llm_client import list_models as _list
+        endpoint = body.get("endpoint", "").strip()
+        api_key = body.get("api_key", "").strip()
+        if not (endpoint and api_key):
+            raise HTTPException(400, "endpoint and api_key are required")
+        return await _list(endpoint=endpoint, api_key=api_key)
+
+    @app.post("/api/v1/agent/chat")
+    async def agent_chat_endpoint(request: Request) -> StreamingResponse:
+        """Streaming SSE agent chat endpoint."""
+        from .agent.llm_client import get_agent_config, make_client
+        from .agent.loop import ToolDispatcher, agent_chat
+        from .agent.system_prompt import build_system_prompt
+        from .agent.tool_specs import convert_mcp_to_openai
+
+        body = await request.json()
+        user_messages = body.get("messages", [])
+        page_context = body.get("page_context") or {}
+
+        if not container:
+            raise HTTPException(503, "Backend not initialized")
+
+        cfg = get_agent_config(container.key_store)
+        if cfg is None or not cfg.is_configured:
+            raise HTTPException(503, "AI agent not configured. Set endpoint/model/api_key in Settings.")
+
+        # Build dispatcher backed by the in-process MCP server's call_tool.
+        # We construct a fresh server here purely for tool dispatch routing.
+        from .mcp_server import create_mcp_server
+        mcp_server = create_mcp_server(
+            market_data=container.market_data,
+            trading=container.trading,
+            portfolio=container.portfolio,
+            env_manager=env_manager,
+            smart_engine=container.smart_engine,
+            candle_repo=candle_repo,
+        )
+
+        # Get the tool list from the MCP server (re-uses inputSchema definitions)
+        # We invoke the registered list_tools handler.
+        from mcp.types import ListToolsRequest
+        tools_resp = await mcp_server.request_handlers[ListToolsRequest](
+            ListToolsRequest(method="tools/list", params=None)
+        )
+        mcp_tools = tools_resp.root.tools
+        openai_tools = convert_mcp_to_openai(mcp_tools)
+
+        # The MCP server's call_tool handler is what we need to dispatch via.
+        from mcp.types import CallToolRequest, CallToolRequestParams
+
+        async def _mcp_call(name: str, arguments: dict) -> Any:
+            req = CallToolRequest(
+                method="tools/call",
+                params=CallToolRequestParams(name=name, arguments=arguments),
+            )
+            res = await mcp_server.request_handlers[CallToolRequest](req)
+            return res.root.content
+
+        dispatcher = ToolDispatcher(_mcp_call)
+        client = make_client(cfg)
+        system_prompt = build_system_prompt(page_context)
+
+        async def _stream():
+            try:
+                async for ev in agent_chat(
+                    client=client,
+                    config=cfg,
+                    system_prompt=system_prompt,
+                    user_messages=user_messages,
+                    tools=openai_tools,
+                    dispatcher=dispatcher,
+                    max_turns=15,
+                ):
+                    yield ev.to_sse()
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("Agent chat error")
+                from .agent.loop import SSEEvent
+                yield SSEEvent("error", {"code": "internal", "message": str(exc)}).to_sse()
+            finally:
+                await client.close()
+
+        return StreamingResponse(
+            _stream(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",  # disable nginx buffering
+                "Connection": "keep-alive",
+            },
+        )
 
     return app

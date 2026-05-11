@@ -20,8 +20,8 @@ from .services.market_data_recorder import MarketDataRecorder
 from .persistence.repositories import MarketCandleRepo
 from .services.risk_manager import RiskConfig, RiskManager
 # Import algorithm modules to trigger @register_algorithm decorators
-import deribit_trading.algorithms.tick_chaser  # noqa: F401
-import deribit_trading.algorithms.timed_escalation  # noqa: F401
+import deribit_trading.algorithms.legacy  # noqa: F401  -- registers legacy:* names
+import deribit_trading.algorithms.intent_router  # noqa: F401
 from .smart_order.engine import SmartOrderEngine
 
 logger = logging.getLogger("deribit_trading")
