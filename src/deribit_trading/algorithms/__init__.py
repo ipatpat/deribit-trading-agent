@@ -8,9 +8,18 @@ To add a new algorithm:
 
 from __future__ import annotations
 
+import warnings
 from typing import Any, Protocol, runtime_checkable
 
 from ..smart_order.types import Action, MarketSnapshot
+
+# Old short names → new fully-qualified registry keys. Looking up an alias emits
+# a DeprecationWarning and resolves to the legacy implementation. Drop after one
+# minor version once REST / MCP / service callers migrate to intent path.
+LEGACY_ALIASES: dict[str, str] = {
+    "tick-chaser": "legacy:tick-chaser",
+    "timed-escalation": "legacy:timed-escalation",
+}
 
 
 @runtime_checkable
@@ -48,7 +57,17 @@ def register_algorithm(cls: type) -> type:
 
 
 def get_algorithm(name: str, params: dict[str, Any] | None = None) -> PlacementAlgorithm:
-    """Instantiate a registered algorithm by name."""
+    """Instantiate a registered algorithm by name. Resolves legacy short names."""
+    if name in LEGACY_ALIASES:
+        new_name = LEGACY_ALIASES[name]
+        warnings.warn(
+            f"Algorithm name '{name}' is deprecated; use '{new_name}' or the "
+            f"intent-driven SmartOrderConfig (intent='standard'|'urgent').",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        name = new_name
+
     if name not in ALGORITHM_REGISTRY:
         available = ", ".join(ALGORITHM_REGISTRY.keys()) or "(none)"
         raise ValueError(f"Unknown algorithm '{name}'. Available: {available}")

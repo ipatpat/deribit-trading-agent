@@ -4,15 +4,15 @@ Amends the order when the best price moves by more than min_ticks.
 Simple, fast, and effective for liquid markets.
 """
 
-from ..smart_order.types import Action, MarketSnapshot
-from . import register_algorithm
+from ...smart_order.types import Action, MarketSnapshot
+from .. import register_algorithm
 
 
 @register_algorithm
 class TickChaser:
     """Follow the best bid/ask with a configurable offset and threshold."""
 
-    name = "tick-chaser"
+    name = "legacy:tick-chaser"
 
     def __init__(
         self,

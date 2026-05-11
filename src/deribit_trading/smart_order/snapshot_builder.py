@@ -7,6 +7,7 @@ import time
 from collections import deque
 from typing import Any
 
+from .sigma import SigmaTracker, classify_instrument
 from .types import (
     FeeContext,
     MarketSnapshot,
@@ -22,23 +23,44 @@ from .types import (
 class SnapshotBuilder:
     """Assembles MarketSnapshot from raw Deribit data.
 
-    Maintains a rolling window of prices for volatility estimation.
+    Maintains a rolling window of prices for volatility estimation and a
+    SigmaTracker for σ-based amend thresholds.
     """
 
-    def __init__(self, max_price_history: int = 100) -> None:
+    def __init__(
+        self,
+        max_price_history: int = 100,
+        instrument_name: str = "",
+    ) -> None:
         self._price_history: deque[float] = deque(maxlen=max_price_history)
         self._trade_history: deque[RecentTrade] = deque(maxlen=50)
         self._last_orderbook: dict[str, Any] = {}
         self._last_ticker: dict[str, Any] = {}
+        self.instrument_name = instrument_name
+        self.instrument_class = classify_instrument(instrument_name) if instrument_name else "perp"
+        self.sigma_tracker = SigmaTracker(instrument_class=self.instrument_class)
+        self._last_sigma_sample_at: float = 0.0
 
     def update_orderbook(self, data: dict[str, Any]) -> None:
         self._last_orderbook = data
+        self._maybe_sample_sigma()
 
     def update_ticker(self, data: dict[str, Any]) -> None:
         self._last_ticker = data
         mark = data.get("mark_price")
         if mark:
             self._price_history.append(mark)
+        self._maybe_sample_sigma()
+
+    def _maybe_sample_sigma(self, now: float | None = None) -> None:
+        """Throttle σ sampling to ~1 Hz from whichever event drives us."""
+        now = now if now is not None else time.time()
+        if now - self._last_sigma_sample_at < 1.0:
+            return
+        ob = self._build_orderbook()
+        if ob.best_bid > 0 and ob.best_ask > 0:
+            self.sigma_tracker.record_mid(ob.mid_price, ts=now)
+            self._last_sigma_sample_at = now
 
     def add_public_trade(self, trade: dict[str, Any]) -> None:
         self._trade_history.append(RecentTrade(
@@ -59,6 +81,7 @@ class SnapshotBuilder:
         price_limit: float | None,
         tick_size: float,
         fee_context: FeeContext,
+        arrival_mid: float = 0.0,
     ) -> MarketSnapshot:
         orderbook = self._build_orderbook()
         ticker = self._build_ticker()
@@ -77,6 +100,9 @@ class SnapshotBuilder:
             price_limit=price_limit,
             tick_size=tick_size,
             fee_context=fee_context,
+            sigma=self.sigma_tracker.sigma,
+            arrival_mid=arrival_mid,
+            instrument_class=self.instrument_class,
             micro=micro,
         )
 

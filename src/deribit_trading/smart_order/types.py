@@ -6,8 +6,10 @@ Action is the sole output. This boundary keeps algorithms pure.
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass, field
 from enum import StrEnum
+from typing import Literal
 
 
 # ── Action ──────────────────────────────────────────────────────────
@@ -15,24 +17,51 @@ from enum import StrEnum
 
 @dataclass(frozen=True)
 class Action:
-    """Decision output from a placement algorithm."""
+    """Decision output from a placement algorithm.
 
-    kind: str  # "hold", "amend", "cancel", "market"
+    Variants:
+      - HOLD                        : do nothing
+      - place(price, post_only)     : initial placement or re-place after reject
+      - amend(price, post_only)     : modify existing order's price (and post_only flag)
+      - ioc(price, amount)          : immediate-or-cancel sweep (Lv3)
+      - cancel()                    : terminate
+      - market()                    : convert remaining to market (Lv4)
+    """
+
+    kind: str  # "hold" | "place" | "amend" | "ioc" | "cancel" | "market"
     price: float | None = None
+    post_only: bool = False
+    amount: float | None = None  # only for ioc
 
     HOLD: Action = None  # type: ignore[assignment]  # set below
-    CANCEL: Action = None  # type: ignore[assignment]
-    MARKET: Action = None  # type: ignore[assignment]
 
     @classmethod
-    def amend(cls, new_price: float) -> Action:
-        return cls(kind="amend", price=new_price)
+    def place(cls, price: float, post_only: bool = True) -> Action:
+        return cls(kind="place", price=price, post_only=post_only)
+
+    @classmethod
+    def amend(cls, new_price: float, post_only: bool = True) -> Action:
+        return cls(kind="amend", price=new_price, post_only=post_only)
+
+    @classmethod
+    def ioc(cls, price: float, amount: float) -> Action:
+        return cls(kind="ioc", price=price, amount=amount, post_only=False)
+
+    @classmethod
+    def cancel(cls) -> Action:
+        return cls(kind="cancel")
+
+    @classmethod
+    def market(cls) -> Action:
+        return cls(kind="market")
 
 
-# Singleton instances
+# Singleton HOLD (immutable, no parameters)
 Action.HOLD = Action(kind="hold")
-Action.CANCEL = Action(kind="cancel")
-Action.MARKET = Action(kind="market")
+
+# Backwards-compat sentinels (deprecated; use Action.cancel() / Action.market())
+Action.CANCEL = Action(kind="cancel")  # type: ignore[attr-defined]
+Action.MARKET = Action(kind="market")  # type: ignore[attr-defined]
 
 
 # ── SmartOrder state ────────────────────────────────────────────────
@@ -41,6 +70,7 @@ Action.MARKET = Action(kind="market")
 class SmartOrderState(StrEnum):
     PENDING = "pending"
     ACTIVE = "active"
+    ESCALATING = "escalating"  # Transient: cancel→place between escalation levels
     PAUSED = "paused"
     COMPLETED = "completed"
     CANCELLED = "cancelled"
@@ -101,6 +131,8 @@ class MyOrderState:
     filled_amount: float = 0.0
     state: str = "open"  # open, filled, cancelled
     post_only_rejected: bool = False
+    post_only_reject_count: int = 0
+    current_level: int = 0  # 0-4: Lv0 own-top, Lv1 mid, Lv2 opposite-top, Lv3 IOC, Lv4 market
 
     @property
     def remaining(self) -> float:
@@ -162,6 +194,11 @@ class MarketSnapshot:
     # Fee context
     fee_context: FeeContext = field(default_factory=lambda: FeeContext(maker_fee=0, taker_fee=0.0005))
 
+    # Realized volatility (price units / sqrt(second)); set by SnapshotBuilder via SigmaTracker
+    sigma: float = 0.0
+    arrival_mid: float = 0.0  # mid_price captured at SmartOrder creation time, for price_limit anchoring
+    instrument_class: str = "perp"  # "perp" | "option" | "future"
+
     # Micro-structure features (for advanced algorithms)
     micro: MicroFeatures = field(default_factory=MicroFeatures)
 
@@ -176,20 +213,124 @@ class MarketSnapshot:
     def remaining_amount(self) -> float:
         return self.target_amount - self.my_order.filled_amount
 
+    def amend_threshold_ticks(self, k: float | None = None, k_min: int | None = None, dt_seconds: float = 1.0) -> int:
+        """Compute σ-based amend threshold in tick units.
+
+        amend_threshold_ticks = max(K_min, ceil(k * σ * sqrt(dt) / tick_size))
+
+        Defaults by class:
+          perp:   k=2.0, K_min=1
+          option: k=1.0, K_min=1
+        """
+        import math
+        if self.instrument_class == "option":
+            k = k if k is not None else 1.0
+            k_min = k_min if k_min is not None else 1
+        else:
+            k = k if k is not None else 2.0
+            k_min = k_min if k_min is not None else 1
+
+        if self.sigma <= 0 or self.tick_size <= 0:
+            return k_min
+        raw = k * self.sigma * math.sqrt(dt_seconds) / self.tick_size
+        return max(k_min, int(math.ceil(raw)))
+
 
 # ── SmartOrderConfig ────────────────────────────────────────────────
 
 
+Intent = Literal["standard", "urgent"]
+
+
 @dataclass
 class SmartOrderConfig:
-    """User-facing configuration for creating a SmartOrder."""
+    """User-facing configuration for creating a SmartOrder.
+
+    Intent-driven: users pick "standard" (maker-first, escalating) or "urgent"
+    (immediate IOC). Algorithm parameters are auto-derived from σ and the
+    instrument class. Use the optional override fields only for tuning.
+    """
 
     instrument_name: str
     direction: str  # "buy" or "sell"
     amount: float
-    algorithm: str = "tick-chaser"
-    algo_params: dict = field(default_factory=dict)
-    price_limit: float | None = None
-    timeout_ms: int | None = 120_000  # default 2 minutes
+
+    # Intent-driven entry point
+    intent: Intent = "standard"
+
+    # Patience budget for escalation (Standard only). Urgent ignores this and
+    # starts at Lv3 immediately.
+    t_patience_ms: int = 30_000
+
+    # Cap on cross depth for Lv3 IOC (sweep up to N levels of opposite book).
+    max_cross_levels: int = 1
+
+    # Class-aware price limits (optional overrides; class-appropriate defaults
+    # apply when None).
+    price_limit_pct: float | None = None  # perp/future, e.g. 0.003 = ±0.3% of arrival_mid
+    price_limit_ticks: int | None = None  # option, e.g. 5 ticks from arrival_mid
+    price_limit_iv: float | None = None  # option, e.g. 0.02 = ±2 IV vols (requires BS)
+
+    # Escape hatch: if False, skip post_only=True at Lv0/Lv1 (rare; advanced).
     prefer_maker: bool = True
-    patience: float = 0.5  # 0.0 (aggressive) to 1.0 (patient)
+
+    # Legacy passthrough for tick-chaser/timed-escalation (deprecated path).
+    algorithm: str | None = None
+    algo_params: dict = field(default_factory=dict)
+
+    # Legacy: kept for backward-compat construction; not used in intent path.
+    price_limit: float | None = None
+    timeout_ms: int | None = None
+
+    def __post_init__(self) -> None:
+        # Validate price_limit overrides
+        if self.price_limit_pct is not None:
+            if not (0 < self.price_limit_pct <= 0.05):
+                raise ValueError(
+                    f"price_limit_pct must be in (0, 0.05], got {self.price_limit_pct}"
+                )
+        if self.price_limit_ticks is not None:
+            if self.price_limit_ticks <= 0:
+                raise ValueError(
+                    f"price_limit_ticks must be > 0, got {self.price_limit_ticks}"
+                )
+        if self.price_limit_iv is not None:
+            if not (0 < self.price_limit_iv <= 0.2):
+                raise ValueError(
+                    f"price_limit_iv must be in (0, 0.2], got {self.price_limit_iv}"
+                )
+        if self.t_patience_ms <= 0:
+            raise ValueError(f"t_patience_ms must be > 0, got {self.t_patience_ms}")
+        if self.max_cross_levels < 1:
+            raise ValueError(
+                f"max_cross_levels must be >= 1, got {self.max_cross_levels}"
+            )
+
+    @classmethod
+    def from_legacy(
+        cls,
+        instrument_name: str,
+        direction: str,
+        amount: float,
+        patience: float = 0.5,
+        **kwargs,
+    ) -> "SmartOrderConfig":
+        """Adapter for callers still passing the old `patience` float field.
+
+        patience < 0.3  → urgent intent
+        patience >= 0.3 → standard intent
+        """
+        warnings.warn(
+            "SmartOrderConfig.from_legacy(patience=...) is deprecated; "
+            "use intent='standard'|'urgent' directly.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        intent: Intent = "urgent" if patience < 0.3 else "standard"
+        return cls(
+            instrument_name=instrument_name,
+            direction=direction,
+            amount=amount,
+            intent=intent,
+            **kwargs,
+        )

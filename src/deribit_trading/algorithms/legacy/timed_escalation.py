@@ -5,15 +5,15 @@ Phase 2 (escalation): progressively move toward market price.
 Phase 3 (timeout): convert to market or cancel.
 """
 
-from ..smart_order.types import Action, MarketSnapshot
-from . import register_algorithm
+from ...smart_order.types import Action, MarketSnapshot
+from .. import register_algorithm
 
 
 @register_algorithm
 class TimedEscalation:
     """Escalate price toward market over time."""
 
-    name = "timed-escalation"
+    name = "legacy:timed-escalation"
 
     def __init__(
         self,

@@ -28,8 +28,9 @@ from deribit_trading.smart_order.fee_logic import (
     should_use_post_only,
 )
 from deribit_trading.algorithms import get_algorithm, list_algorithms
-from deribit_trading.algorithms.tick_chaser import TickChaser
-from deribit_trading.algorithms.timed_escalation import TimedEscalation
+import deribit_trading.algorithms.legacy  # noqa: F401  -- registers legacy:* names
+from deribit_trading.algorithms.legacy.tick_chaser import TickChaser
+from deribit_trading.algorithms.legacy.timed_escalation import TimedEscalation
 
 
 # ── Fixtures ────────────────────────────────────────────────────────
@@ -84,13 +85,23 @@ def test_action_types():
 
 def test_algorithm_registry():
     algos = list_algorithms()
-    assert "tick-chaser" in algos
-    assert "timed-escalation" in algos
+    assert "legacy:tick-chaser" in algos
+    assert "legacy:timed-escalation" in algos
 
 
 def test_get_algorithm():
-    algo = get_algorithm("tick-chaser", {"offset_ticks": 1})
-    assert algo.name == "tick-chaser"
+    algo = get_algorithm("legacy:tick-chaser", {"offset_ticks": 1})
+    assert algo.name == "legacy:tick-chaser"
+
+
+def test_legacy_alias_warns_and_resolves():
+    """Old short name 'tick-chaser' resolves to legacy:* with DeprecationWarning."""
+    import warnings as _w
+    with _w.catch_warnings(record=True) as caught:
+        _w.simplefilter("always")
+        algo = get_algorithm("tick-chaser", {"offset_ticks": 1})
+    assert algo.name == "legacy:tick-chaser"
+    assert any(issubclass(c.category, DeprecationWarning) for c in caught)
 
 
 def test_get_unknown_algorithm():
