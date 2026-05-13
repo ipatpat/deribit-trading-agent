@@ -4,8 +4,10 @@ from dataclasses import dataclass
 
 from deribit_trading.agent.tool_specs import (
     PHASE_1_READ_ONLY_TOOLS,
+    READ_ONLY_TOOLS,
     TOOL_DESCRIPTIONS_OVERRIDE,
     WRITE_TOOLS,
+    WRITE_TOOLS_GATED,
     convert_mcp_to_openai,
     _annotate_optionals,
 )
@@ -75,6 +77,57 @@ def test_write_tools_excluded():
     expected = {"place_order", "cancel_order", "smart_order", "cancel_smart_order", "switch_env"}
     assert set(WRITE_TOOLS) == expected
     assert not (set(PHASE_1_READ_ONLY_TOOLS) & set(WRITE_TOOLS))
+
+
+def test_read_only_tools_alias_matches_phase1():
+    assert READ_ONLY_TOOLS == PHASE_1_READ_ONLY_TOOLS
+
+
+def test_write_tools_gated_does_not_include_switch_env():
+    expected = {"place_order", "cancel_order", "smart_order", "cancel_smart_order"}
+    assert set(WRITE_TOOLS_GATED) == expected
+    assert "switch_env" not in WRITE_TOOLS_GATED
+
+
+def test_convert_default_write_disabled_returns_only_read_tools():
+    """write_enabled defaults to False → only read tools."""
+    tools = convert_mcp_to_openai(_build_mock_chain())
+    names = {t["function"]["name"] for t in tools}
+    assert names == set(READ_ONLY_TOOLS)
+    for n in WRITE_TOOLS_GATED:
+        assert n not in names
+
+
+def test_convert_write_enabled_includes_write_tools():
+    """write_enabled=True → reads + 4 gated writes (still no switch_env)."""
+    # Build a chain that also includes write tools as mock entries
+    from dataclasses import dataclass
+
+    @dataclass
+    class _T:
+        name: str
+        description: str = "x"
+        inputSchema: dict = None
+
+        def __post_init__(self):
+            if self.inputSchema is None:
+                self.inputSchema = {"type": "object", "properties": {}}
+
+    chain = _build_mock_chain()
+    # Already includes write tools and switch_env via WRITE_TOOLS injection
+    tools = convert_mcp_to_openai(chain, write_enabled=True)
+    names = {t["function"]["name"] for t in tools}
+    assert set(READ_ONLY_TOOLS) <= names
+    assert set(WRITE_TOOLS_GATED) <= names
+    # switch_env still excluded
+    assert "switch_env" not in names
+
+
+def test_write_tools_have_descriptions_with_confirmation_notice():
+    """The 4 gated write tools must mention 'CONFIRMATION CARD' in description."""
+    for name in WRITE_TOOLS_GATED:
+        desc = TOOL_DESCRIPTIONS_OVERRIDE.get(name, "")
+        assert "CONFIRMATION CARD" in desc, f"{name} description missing confirmation notice"
 
 
 def test_convert_only_returns_whitelist():

@@ -9,6 +9,7 @@ from .repositories import (
     OrderRepo,
     PositionHistoryRepo,
     TradeRepo,
+    WriteAuditRepo,
 )
 
 __all__ = [
@@ -19,6 +20,7 @@ __all__ = [
     "OrderRepo",
     "PositionHistoryRepo",
     "TradeRepo",
+    "WriteAuditRepo",
     "auto_bucket_ms",
     "get_equity_bucketed",
 ]

@@ -19,6 +19,9 @@ DERIBIT REVERSE CONTRACTS (USD-quoted, coin-collateralized)
   in USD notional (size 100 = $100 face).
 - ETH perpetual / future: face value = $1/contract.
 - Options: 1 underlying coin per contract; premium quoted in BTC/ETH.
+- For parameter constraints (min trade size, leverage caps, step sizes, etc.),
+  consult the calling tool's description first; otherwise inspect the
+  Deribit error `data` field and adjust on retry.
 
 INSTRUMENT NAMING
 - Perpetual: BTC-PERPETUAL, ETH-PERPETUAL
@@ -78,11 +81,34 @@ CONSTRAINTS
 """
 
 
-def build_system_prompt(page_context: dict[str, Any] | None = None) -> str:
+# Injected after GOAL when write mode is on. Tells the LLM that write tools
+# exist, but every call will be intercepted by a confirmation card and may be
+# declined / time out — so it can reason about failure modes correctly.
+WRITE_TOOLS_BLOCK = """\
+
+WRITE TOOLS ENABLED
+You may call place_order, cancel_order, smart_order, and cancel_smart_order.
+Each call will be presented to the user as a confirmation card and will NOT
+execute until the user clicks Confirm. If the user declines or does not
+respond within 30 seconds, the tool returns an is_error tool_result — adjust
+your plan accordingly (do not blindly retry). Only call a write tool after
+the user has explicitly asked to place / cancel an order AND you have
+echoed back the parameters for them to verify.
+"""
+
+
+def build_system_prompt(
+    page_context: dict[str, Any] | None = None,
+    write_enabled: bool = False,
+) -> str:
     """Render system prompt with Tier 1 knowledge + dynamic page context.
 
     Args:
         page_context: optional dict like {"route": "/futures", "instrument": "BTC-PERPETUAL"}.
+        write_enabled: when True, splice in the WRITE TOOLS ENABLED block
+            telling the LLM that write tools exist + carry confirmation
+            semantics. Default False = read-only behaviour identical to
+            previous releases.
 
     Returns:
         Complete system prompt string ready to pass as first message.
@@ -90,8 +116,12 @@ def build_system_prompt(page_context: dict[str, Any] | None = None) -> str:
     ctx = page_context or {}
     route = ctx.get("route") or "/"
     instrument = ctx.get("instrument") or "none"
-    return SYSTEM_PROMPT_TEMPLATE.format(
+    prompt = SYSTEM_PROMPT_TEMPLATE.format(
         tier_1=TIER_1_KNOWLEDGE,
         route=route,
         instrument=instrument,
     )
+    if write_enabled:
+        # Splice the WRITE TOOLS block after the GOAL section, before ANCHOR.
+        prompt = prompt.replace("\nANCHOR\n", WRITE_TOOLS_BLOCK + "\nANCHOR\n", 1)
+    return prompt

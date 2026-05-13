@@ -6,13 +6,30 @@ class DeribitError(Exception):
 
 
 class DeribitAPIError(DeribitError):
-    """Error returned by the Deribit API."""
+    """Error returned by the Deribit API.
+
+    The Deribit JSON-RPC error payload has three fields: ``code`` (numeric),
+    ``message`` (often generic, e.g. "Invalid params"), and ``data`` which
+    is where the *specific* reason lives ("size_must_be_multiple_of_min_trade_amount",
+    "param_below_min", actual min/max bounds, the offending param name, etc.).
+
+    The string form intentionally surfaces ``data`` so that downstream
+    consumers — including the AI agent — can self-correct from a single
+    error without us hardcoding every Deribit rule in the system prompt.
+    """
 
     def __init__(self, code: int, message: str, data: dict | None = None) -> None:
         self.code = code
         self.message = message
         self.data = data
-        super().__init__(f"Deribit API error {code}: {message}")
+        base = f"Deribit API error {code}: {message}"
+        if data:
+            try:
+                import json as _json
+                base = f"{base} (data: {_json.dumps(data, default=str)})"
+            except Exception:  # noqa: BLE001
+                base = f"{base} (data: {data!r})"
+        super().__init__(base)
 
 
 class DeribitConnectionError(DeribitError):

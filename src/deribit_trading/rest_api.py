@@ -983,6 +983,7 @@ def create_rest_app(
         body = await request.json()
         user_messages = body.get("messages", [])
         page_context = body.get("page_context") or {}
+        write_enabled = bool(body.get("write_enabled", False))
 
         if not container:
             raise HTTPException(503, "Backend not initialized")
@@ -1010,7 +1011,7 @@ def create_rest_app(
             ListToolsRequest(method="tools/list", params=None)
         )
         mcp_tools = tools_resp.root.tools
-        openai_tools = convert_mcp_to_openai(mcp_tools)
+        openai_tools = convert_mcp_to_openai(mcp_tools, write_enabled=write_enabled)
 
         # The MCP server's call_tool handler is what we need to dispatch via.
         from mcp.types import CallToolRequest, CallToolRequestParams
@@ -1025,7 +1026,11 @@ def create_rest_app(
 
         dispatcher = ToolDispatcher(_mcp_call)
         client = make_client(cfg)
-        system_prompt = build_system_prompt(page_context)
+        system_prompt = build_system_prompt(page_context, write_enabled=write_enabled)
+        audit_repo = None
+        if container.db is not None:
+            from .persistence import WriteAuditRepo
+            audit_repo = WriteAuditRepo(container.db)
 
         async def _stream():
             try:
@@ -1037,6 +1042,9 @@ def create_rest_app(
                     tools=openai_tools,
                     dispatcher=dispatcher,
                     max_turns=15,
+                    audit_repo=audit_repo,
+                    env=str(env_manager.current_env),
+                    write_enabled=write_enabled,
                 ):
                     yield ev.to_sse()
             except Exception as exc:  # noqa: BLE001
@@ -1055,5 +1063,18 @@ def create_rest_app(
                 "Connection": "keep-alive",
             },
         )
+
+    class ConfirmBody(BaseModel):
+        confirmed: bool
+        reason: str | None = None
+
+    @app.post("/api/v1/agent/confirm/{tool_call_id}")
+    async def confirm_tool(tool_call_id: str, body: ConfirmBody) -> dict[str, Any]:
+        """Resolve a paused agent write-tool call with the user's decision."""
+        from .agent.loop import resolve_confirmation
+        ok = resolve_confirmation(tool_call_id, body.confirmed)
+        if not ok:
+            raise HTTPException(404, "Unknown or already-resolved tool_call_id")
+        return {"ok": True}
 
     return app

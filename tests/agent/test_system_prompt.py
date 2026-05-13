@@ -27,6 +27,49 @@ def test_vida_not_duplicated_in_tier1():
     assert "Vida" not in TIER_1_KNOWLEDGE
 
 
+# ── Write mode injection ─────────────────────────────────────────────────────
+
+
+def test_write_mode_default_off_unchanged():
+    """write_enabled=False (default) produces prompt identical to legacy."""
+    p_default = build_system_prompt({"route": "/", "instrument": None})
+    p_explicit = build_system_prompt({"route": "/", "instrument": None}, write_enabled=False)
+    assert p_default == p_explicit
+    assert "WRITE TOOLS ENABLED" not in p_default
+
+
+def test_write_mode_on_injects_block():
+    """write_enabled=True splices WRITE TOOLS ENABLED block between GOAL and ANCHOR."""
+    p = build_system_prompt({"route": "/", "instrument": None}, write_enabled=True)
+    assert "WRITE TOOLS ENABLED" in p
+    # Must mention all 4 gated tool names
+    for name in ("place_order", "cancel_order", "smart_order", "cancel_smart_order"):
+        assert name in p
+    # Must mention confirmation + 30 seconds semantics
+    assert "Confirm" in p
+    assert "30 seconds" in p
+    # Block must come BEFORE ANCHOR (positional check)
+    write_pos = p.index("WRITE TOOLS ENABLED")
+    anchor_pos = p.index("ANCHOR")
+    assert write_pos < anchor_pos
+
+
+def test_write_mode_preserves_anchor_principles():
+    """Enabling writes must NOT relax the anchor / refusal principles."""
+    p = build_system_prompt({"route": "/", "instrument": None}, write_enabled=True)
+    assert "Refuse to predict price direction" in p
+    assert "Refuse direct yes/no buy/sell recommendations" in p
+
+
+def test_write_mode_size_budget():
+    """Write mode prompt must stay ≤ 4500 chars (500 over the read-only 4000 cap)."""
+    p = build_system_prompt(
+        {"route": "/futures", "instrument": "BTC-PERPETUAL"},
+        write_enabled=True,
+    )
+    assert len(p) <= 4500, f"Write-mode prompt too large: {len(p)} chars"
+
+
 def test_required_sections_present():
     prompt = build_system_prompt()
     for section in (

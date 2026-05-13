@@ -167,6 +167,28 @@ class Database:
             await db.commit()
             logger.info("Database migrated to schema version 2")
 
+        if version < 3:
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS agent_write_audit (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    tool_call_id TEXT NOT NULL,
+                    tool_name TEXT NOT NULL,
+                    args_json TEXT NOT NULL,
+                    summary TEXT NOT NULL,
+                    decision TEXT NOT NULL CHECK(decision IN ('confirmed', 'declined', 'timeout')),
+                    decision_reason TEXT,
+                    env TEXT NOT NULL,
+                    created_at INTEGER NOT NULL
+                )
+            """)
+            await db.execute("""
+                CREATE INDEX IF NOT EXISTS idx_audit_created_at
+                    ON agent_write_audit(created_at DESC)
+            """)
+            await self._set_version(3)
+            await db.commit()
+            logger.info("Database migrated to schema version 3")
+
     async def _get_version(self) -> int:
         db = self.connection
         try:

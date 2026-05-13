@@ -324,3 +324,56 @@ class MarketCandleRepo:
         columns = [d[0] for d in cursor.description] if cursor.description else []
         rows = await cursor.fetchall()
         return [dict(zip(columns, r)) for r in rows]
+
+
+class WriteAuditRepo:
+    """CRUD for agent_write_audit table.
+
+    Records every user decision on a write-tool call (confirmed / declined /
+    timeout) for compliance + dispute resolution. Each row is a complete
+    audit trail entry for one tool_call_id.
+    """
+
+    def __init__(self, db: Database) -> None:
+        self._db = db
+
+    async def record(self, decision: dict[str, Any]) -> None:
+        """Insert one audit row.
+
+        decision must include: tool_call_id, tool_name, args_json, summary,
+        decision (∈ {'confirmed', 'declined', 'timeout'}), env. Optional:
+        decision_reason. `created_at` is auto-filled with current ms epoch.
+        """
+        import time
+
+        await self._db.connection.execute(
+            """INSERT INTO agent_write_audit
+               (tool_call_id, tool_name, args_json, summary,
+                decision, decision_reason, env, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                decision["tool_call_id"],
+                decision["tool_name"],
+                decision["args_json"],
+                decision["summary"],
+                decision["decision"],
+                decision.get("decision_reason"),
+                decision["env"],
+                int(time.time() * 1000),
+            ),
+        )
+        await self._db.connection.commit()
+
+    async def recent(self, limit: int = 50) -> list[dict[str, Any]]:
+        """Most recent audit entries, newest first."""
+        cursor = await self._db.connection.execute(
+            """SELECT tool_call_id, tool_name, args_json, summary,
+                      decision, decision_reason, env, created_at
+               FROM agent_write_audit
+               ORDER BY created_at DESC
+               LIMIT ?""",
+            (limit,),
+        )
+        columns = [d[0] for d in cursor.description] if cursor.description else []
+        rows = await cursor.fetchall()
+        return [dict(zip(columns, r)) for r in rows]

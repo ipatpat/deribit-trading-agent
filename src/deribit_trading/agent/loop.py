@@ -18,9 +18,37 @@ from typing import Any, AsyncIterator
 from openai import AsyncOpenAI, APIError, AuthenticationError, RateLimitError
 
 from .llm_client import AgentConfig
-from .tool_specs import PHASE_1_READ_ONLY_TOOLS
+from .summary import summarize as _summarize_write_call
+from .tool_specs import READ_ONLY_TOOLS, WRITE_TOOLS_GATED
 
 logger = logging.getLogger(__name__)
+
+
+# ── Pending confirmations (module-level state) ────────────────────────────────
+# Maps tool_call_id → Future. When the user resolves the ConfirmationCard
+# in the UI, REST hits POST /api/v1/agent/confirm/<id> which calls
+# `resolve_confirmation(...)` below, which sets the Future and unblocks the
+# agent loop that's awaiting it.
+_pending_confirmations: dict[str, asyncio.Future[bool]] = {}
+
+# 30-second cap on user confirmation; matches the frontend countdown.
+CONFIRMATION_TIMEOUT_SECONDS: float = 30.0
+
+
+def resolve_confirmation(tool_call_id: str, confirmed: bool) -> bool:
+    """Resolve a pending confirmation. Returns True if the future was found
+    and unresolved (success); False if unknown or already-resolved."""
+    future = _pending_confirmations.get(tool_call_id)
+    if future is None or future.done():
+        return False
+    future.set_result(confirmed)
+    return True
+
+
+def has_pending_confirmation(tool_call_id: str) -> bool:
+    """Exposed for tests / introspection."""
+    future = _pending_confirmations.get(tool_call_id)
+    return future is not None and not future.done()
 
 
 # ── SSE event ─────────────────────────────────────────────────────────────────
@@ -28,7 +56,7 @@ logger = logging.getLogger(__name__)
 class SSEEvent:
     """One SSE event to send to the frontend."""
 
-    event: str  # text_delta | tool_use_start | tool_use_input | tool_use_end | tool_result | done | error
+    event: str  # text_delta | tool_use_start | tool_use_input | tool_use_end | tool_result | confirmation_required | reasoning_delta | done | error
     data: dict[str, Any]
 
     def to_sse(self) -> str:
@@ -38,7 +66,15 @@ class SSEEvent:
 
 # ── Tool dispatcher protocol ──────────────────────────────────────────────────
 class ToolDispatcher:
-    """Wraps mcp_server.call_tool with phase-1 whitelist enforcement."""
+    """Wraps mcp_server.call_tool with whitelist enforcement.
+
+    The whitelist covers ALL tools the agent may eventually invoke
+    (read-only + gated write). The agent loop is responsible for
+    intercepting write tools and routing them through the confirmation
+    flow before they reach this dispatcher.
+    """
+
+    _ALLOWED: set[str] = set(READ_ONLY_TOOLS) | set(WRITE_TOOLS_GATED)
 
     def __init__(self, mcp_call_tool: Any) -> None:
         # mcp_call_tool: async callable (name, arguments) -> list[TextContent]
@@ -46,7 +82,7 @@ class ToolDispatcher:
 
     async def dispatch(self, name: str, arguments: dict[str, Any]) -> tuple[Any, bool]:
         """Run a tool by name. Returns (result_json_or_text, is_error)."""
-        if name not in PHASE_1_READ_ONLY_TOOLS:
+        if name not in self._ALLOWED:
             return (
                 f"Tool '{name}' is not available in Phase 1 (read-only mode). "
                 f"For order placement use the Place Order panel in the UI.",
@@ -59,11 +95,17 @@ class ToolDispatcher:
                 text = "".join(getattr(c, "text", str(c)) for c in content)
             else:
                 text = str(content)
-            # Try to parse as JSON; fall back to text
+            # mcp_server.call_tool wraps its branches in a top-level try/except
+            # that returns exceptions as `Error: <Class>: <msg>` plain text.
+            # Re-classify that here so the LLM sees is_error=True and stops
+            # retrying blindly.
+            is_error = text.lstrip().startswith("Error:") or text.lstrip().startswith(
+                "Error "
+            )
             try:
-                return (json.loads(text), False)
+                return (json.loads(text), is_error)
             except (json.JSONDecodeError, TypeError):
-                return (text, False)
+                return (text, is_error)
         except Exception as exc:  # noqa: BLE001 — agent should see all tool errors
             logger.warning("Tool %s failed: %s", name, exc)
             return (f"Tool '{name}' raised: {type(exc).__name__}: {exc}", True)
@@ -79,6 +121,9 @@ async def agent_chat(
     tools: list[dict[str, Any]],
     dispatcher: ToolDispatcher,
     max_turns: int = 15,
+    audit_repo: Any = None,
+    env: str = "unknown",
+    write_enabled: bool = False,
 ) -> AsyncIterator[SSEEvent]:
     """Run a multi-turn agent loop, yielding SSE events.
 
@@ -90,6 +135,9 @@ async def agent_chat(
         tools: OpenAI tool defs.
         dispatcher: ToolDispatcher wrapping mcp_server.call_tool.
         max_turns: hard cap on tool-call turns.
+        audit_repo: optional WriteAuditRepo; if provided, each write tool
+            decision (confirmed / declined / timeout) is recorded.
+        env: 'production' / 'testnet' — passed through to audit rows.
     """
     # Conversation state
     messages: list[dict[str, Any]] = [{"role": "system", "content": system_prompt}]
@@ -228,6 +276,95 @@ async def agent_chat(
 
             # Dispatch tools, append tool result messages
             for tc_id, name, args in parsed_calls:
+                if name in WRITE_TOOLS_GATED:
+                    if not write_enabled:
+                        # Defense in depth: even if the LLM somehow synthesizes a
+                        # write-tool call while write_enabled=false (some providers
+                        # don't strictly validate against the tools list), reject
+                        # without showing a confirmation card.
+                        msg = (
+                            f"Tool '{name}' is not available — write mode is off. "
+                            "Ask the user to toggle the lock icon in the chat header "
+                            "to enable order placement."
+                        )
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tc_id,
+                            "content": msg,
+                        })
+                        yield SSEEvent(
+                            "tool_result",
+                            {"tool_use_id": tc_id, "output": msg, "is_error": True},
+                        )
+                        continue
+                    # Register the pending Future BEFORE yielding the SSE event,
+                    # so the frontend's confirm POST (or test's resolve call)
+                    # finds it immediately even if it races to respond.
+                    summary = _summarize_write_call(name, args)
+                    future: asyncio.Future[bool] = (
+                        asyncio.get_event_loop().create_future()
+                    )
+                    _pending_confirmations[tc_id] = future
+                    yield SSEEvent(
+                        "confirmation_required",
+                        {
+                            "tool_call_id": tc_id,
+                            "name": name,
+                            "args": args,
+                            "summary": summary,
+                        },
+                    )
+                    decision: str
+                    decision_reason: str | None = None
+                    try:
+                        confirmed = await asyncio.wait_for(
+                            future, timeout=CONFIRMATION_TIMEOUT_SECONDS
+                        )
+                        decision = "confirmed" if confirmed else "declined"
+                    except asyncio.TimeoutError:
+                        confirmed = False
+                        decision = "timeout"
+                        decision_reason = "no_response_30s"
+                    finally:
+                        _pending_confirmations.pop(tc_id, None)
+
+                    # Audit the decision (best-effort; never blocks main flow).
+                    if audit_repo is not None:
+                        try:
+                            await audit_repo.record({
+                                "tool_call_id": tc_id,
+                                "tool_name": name,
+                                "args_json": json.dumps(args, default=str),
+                                "summary": summary,
+                                "decision": decision,
+                                "decision_reason": decision_reason,
+                                "env": env,
+                            })
+                        except Exception as exc:  # noqa: BLE001
+                            logger.warning("Audit log failed for %s: %s", tc_id, exc)
+
+                    if not confirmed:
+                        msg = (
+                            "User declined the trade."
+                            if decision == "declined"
+                            else "Confirmation timed out (no response in 30s)."
+                        )
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tc_id,
+                            "content": msg,
+                        })
+                        yield SSEEvent(
+                            "tool_result",
+                            {
+                                "tool_use_id": tc_id,
+                                "output": msg,
+                                "is_error": True,
+                            },
+                        )
+                        continue
+                    # Fall through: confirmed → real dispatch below
+
                 output, is_error = await dispatcher.dispatch(name, args)
                 # Tool result must be a string for OpenAI API
                 output_str = (

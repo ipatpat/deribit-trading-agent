@@ -1,8 +1,11 @@
-"""MCP -> OpenAI tool def conversion + read-only whitelist + description override.
+"""MCP -> OpenAI tool def conversion + tool whitelists + description override.
 
-Phase 1 exposes the atomic-redesign data plane (12 read-only data tools +
-1 compute tool) to the agent. The 5 write tools — place_order, cancel_order,
-smart_order, cancel_smart_order, switch_env — stay disabled until Phase 3.
+By default (`write_enabled=False`) only the atomic-redesign data plane
+(12 read-only data tools + 1 compute tool) is exposed to the LLM. When
+`write_enabled=True`, 4 write tools (place_order / cancel_order /
+smart_order / cancel_smart_order) are added — each gated by a per-call
+confirmation card in the agent loop. `switch_env` is never exposed to the
+LLM (environment switching is a configuration concern, UI-only).
 
 Tool descriptions are *overridden* at the agent layer so the LLM sees a rich
 "when to use me" prompt; the original MCP server descriptions stay short for
@@ -13,8 +16,8 @@ from __future__ import annotations
 
 from typing import Any
 
-# ── Phase 1 read-only whitelist (12 atomic tools) ────────────────────────────
-PHASE_1_READ_ONLY_TOOLS: list[str] = [
+# ── Read-only data plane (12 atomic tools + 1 compute) ──────────────────────
+READ_ONLY_TOOLS: list[str] = [
     # Discovery (2)
     "list_instruments",
     "list_expiries",
@@ -35,8 +38,21 @@ PHASE_1_READ_ONLY_TOOLS: list[str] = [
     "analyze_option_combo",
 ]
 
-# Excluded from Phase 1 — write tools that mutate account state. Phase 3 will
-# introduce them with a confirmation card flow.
+# Legacy alias — kept so existing tests / imports don't break.
+PHASE_1_READ_ONLY_TOOLS: list[str] = READ_ONLY_TOOLS
+
+# Gated write tools — only exposed when `write_enabled=True`. Each call still
+# requires per-call confirmation in the agent loop. `switch_env` is excluded
+# (configuration, not trading).
+WRITE_TOOLS_GATED: list[str] = [
+    "place_order",
+    "cancel_order",
+    "smart_order",
+    "cancel_smart_order",
+]
+
+# Tools that must never reach the LLM, regardless of write_enabled. Currently
+# only `switch_env` (production / testnet toggle is UI-only).
 WRITE_TOOLS: list[str] = [
     "place_order",
     "cancel_order",
@@ -186,30 +202,86 @@ TOOL_DESCRIPTIONS_OVERRIDE: dict[str, str] = {
         "market query. Direction must be 'buy' or 'sell'; amount defaults "
         "to 1 if omitted."
     ),
+    # ── Write tools (only exposed when write_enabled=True) ─────────────────
+    "place_order": (
+        "Place a limit or market order on Deribit. EACH CALL WILL TRIGGER A "
+        "USER CONFIRMATION CARD — the user must click Confirm before the "
+        "order actually submits; if the user declines or doesn't respond "
+        "within 30 seconds, the tool returns is_error and you should adjust "
+        "your plan. "
+        "Params: instrument_name (e.g. BTC-PERPETUAL, BTC-27JUN26-70000-C), "
+        "direction ('buy'/'sell'), amount (integer multiple of contract "
+        "size), order_type ('limit'/'market', default limit), price "
+        "(required for limit), label (optional). "
+        "AMOUNT CONSTRAINTS (perpetuals & futures): BTC-PERPETUAL and "
+        "BTC futures — minimum 10 contracts, step 10 ($10 face value × 10 = "
+        "$100 notional floor). ETH-PERPETUAL and ETH futures — minimum 1 "
+        "contract, step 1 ($1 face value). Options — minimum 0.1 coin units. "
+        "Submitting below the minimum or off-step returns Deribit "
+        "-32602 with `data.reason` describing the violation; on such an "
+        "error, read data and resubmit at the closest valid amount rather "
+        "than retrying the same value. "
+        "Returns {order_id, status, filled_amount, average_price}. Use this "
+        "only after the user has explicitly asked to place a trade and you "
+        "have echoed the parameters for them to verify."
+    ),
+    "cancel_order": (
+        "Cancel a previously placed order by order_id. EACH CALL TRIGGERS A "
+        "USER CONFIRMATION CARD before execution. Use this when the user "
+        "asks to cancel a specific open order. The order_id should come "
+        "from a prior place_order result or from the user. Returns the "
+        "cancelled order's final state. If the order is already filled or "
+        "doesn't exist, the call returns is_error."
+    ),
+    "smart_order": (
+        "Create a smart order (managed execution algo: tick-chaser or "
+        "intent-router with maker-preferred semantics). EACH CALL TRIGGERS "
+        "A USER CONFIRMATION CARD. Params include instrument_name, "
+        "direction, amount, algorithm (default 'tick-chaser'), patience "
+        "(0=aggressive, 1=patient), price_limit, timeout_ms, prefer_maker. "
+        "Use this when the user wants execution-quality optimisation "
+        "(e.g. 'work this order to get a maker fill') rather than a "
+        "single instant fill. For an immediate plain order, use place_order."
+    ),
+    "cancel_smart_order": (
+        "Cancel an in-flight smart order by id. EACH CALL TRIGGERS A USER "
+        "CONFIRMATION CARD. The id should come from a prior smart_order "
+        "result or list_smart_orders. Use this when the user wants to "
+        "abort a managed execution that's still working. If the smart "
+        "order has already completed, returns is_error."
+    ),
 }
 
 
 # ── Conversion: MCP Tool -> OpenAI tool def ──────────────────────────────────
-def convert_mcp_to_openai(mcp_tools: list[Any]) -> list[dict[str, Any]]:
+def convert_mcp_to_openai(
+    mcp_tools: list[Any],
+    write_enabled: bool = False,
+) -> list[dict[str, Any]]:
     """Convert MCP Tool objects to OpenAI function tool definitions.
 
-    Filters by PHASE_1_READ_ONLY_TOOLS whitelist, applies description overrides,
-    annotates optional parameters with "Optional. Omit if unknown." prefix
-    (GLM-4.6 / DeepSeek fail-fast defense).
+    Filters by whitelist, applies description overrides, annotates optional
+    parameters with "Optional. Omit if unknown." prefix (GLM/DeepSeek
+    fail-fast defense).
 
     Args:
         mcp_tools: list of MCP Tool objects with .name, .description, .inputSchema
+        write_enabled: if False (default), only READ_ONLY_TOOLS are exposed.
+            If True, WRITE_TOOLS_GATED tools are also included — each call
+            will still be gated by a per-call confirmation card in the
+            agent loop. `switch_env` is never exposed.
 
     Returns:
         OpenAI tool defs: [{"type": "function", "function": {name, description, parameters}}, ...]
     """
+    whitelist = set(READ_ONLY_TOOLS)
+    if write_enabled:
+        whitelist |= set(WRITE_TOOLS_GATED)
     out: list[dict[str, Any]] = []
-    whitelist = set(PHASE_1_READ_ONLY_TOOLS)
     for tool in mcp_tools:
         if tool.name not in whitelist:
             continue
         description = TOOL_DESCRIPTIONS_OVERRIDE.get(tool.name, tool.description)
-        # Deep-copy schema to avoid mutating the original
         parameters = _annotate_optionals(tool.inputSchema)
         out.append(
             {

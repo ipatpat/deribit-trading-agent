@@ -203,15 +203,18 @@ async def test_tool_exception_returns_is_error_then_continues():
     assert events[-1].event == "done"
 
 
-# ── Banned tool → is_error ────────────────────────────────────────────────────
+# ── Unknown tool (hallucinated by LLM) → is_error ─────────────────────────────
 @pytest.mark.asyncio
-async def test_banned_tool_returns_is_error():
+async def test_unknown_tool_returns_is_error():
+    """If LLM hallucinates a tool name not on the whitelist (read or gated
+    write), dispatcher rejects with is_error. Verifies the safety net beneath
+    the OpenAI-tools-list gating."""
     turn1 = [
-        _chunk(_delta(tool_calls=[_tool_call_delta(0, "tc_1", "place_order", '{"instrument_name":"X","direction":"buy","amount":1}')])),
+        _chunk(_delta(tool_calls=[_tool_call_delta(0, "tc_1", "definitely_not_a_tool", '{}')])),
         _chunk(_delta(), finish_reason="tool_calls"),
     ]
     turn2 = [
-        _chunk(_delta(content="I cannot place orders."), finish_reason="stop"),
+        _chunk(_delta(content="That tool doesn't exist."), finish_reason="stop"),
         _chunk(usage=_usage(5, 5, 10)),
     ]
     client = _make_client([turn1, turn2])
@@ -220,7 +223,7 @@ async def test_banned_tool_returns_is_error():
     events: list[SSEEvent] = []
     async for ev in agent_chat(
         client=client, config=CFG, system_prompt="sys",
-        user_messages=[{"role": "user", "content": "buy 1 btc"}],
+        user_messages=[{"role": "user", "content": "x"}],
         tools=[],
         dispatcher=dispatcher, max_turns=15,
     ):
@@ -228,7 +231,7 @@ async def test_banned_tool_returns_is_error():
 
     tr = next(e for e in events if e.event == "tool_result")
     assert tr.data["is_error"] is True
-    assert "Phase 1" in tr.data["output"] or "not available" in tr.data["output"]
+    assert "not available" in tr.data["output"]
 
 
 # ── Max turns exceeded ────────────────────────────────────────────────────────
@@ -343,3 +346,227 @@ async def test_auth_error_emits_error_event():
     assert len(events) == 1
     assert events[0].event == "error"
     assert events[0].data["code"] == "auth_failed"
+
+
+# ── Write-mode confirmation flow ──────────────────────────────────────────────
+
+
+def _make_place_order_turn():
+    return [
+        _chunk(_delta(tool_calls=[_tool_call_delta(0, "tc_w1", "place_order",
+                    '{"instrument_name":"BTC-PERPETUAL","direction":"buy","amount":1,"order_type":"market"}')])),
+        _chunk(_delta(), finish_reason="tool_calls"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_write_tool_yields_confirmation_required_then_dispatches_on_confirm():
+    """Confirmed write tool: confirmation_required → resolve True → tool_result success."""
+    import asyncio
+    from deribit_trading.agent.loop import resolve_confirmation
+
+    turn1 = _make_place_order_turn()
+    turn2 = [
+        _chunk(_delta(content="Order placed."), finish_reason="stop"),
+        _chunk(usage=_usage(10, 5, 15)),
+    ]
+    client = _make_client([turn1, turn2])
+
+    mcp_mock = AsyncMock(return_value=[MagicMock(text='{"order_id":"ord_xyz","status":"open"}', type="text")])
+    dispatcher = ToolDispatcher(mcp_mock)
+
+    events: list[SSEEvent] = []
+
+    async def _drive():
+        async for ev in agent_chat(
+            client=client, config=CFG, system_prompt="sys",
+            user_messages=[{"role": "user", "content": "place a buy order"}],
+            tools=[{"type": "function", "function": {"name": "place_order", "description": "x", "parameters": {}}}],
+            dispatcher=dispatcher, max_turns=15, write_enabled=True,
+        ):
+            events.append(ev)
+            if ev.event == "confirmation_required":
+                # Simulate the user clicking Confirm after a brief moment.
+                await asyncio.sleep(0.01)
+                ok = resolve_confirmation(ev.data["tool_call_id"], True)
+                assert ok is True
+
+    await _drive()
+
+    event_names = [e.event for e in events]
+    assert "confirmation_required" in event_names
+    assert "tool_result" in event_names
+    confirmation = next(e for e in events if e.event == "confirmation_required")
+    assert confirmation.data["name"] == "place_order"
+    assert confirmation.data["tool_call_id"] == "tc_w1"
+    assert "summary" in confirmation.data
+    # Real dispatch happened → tool_result not is_error
+    tr = next(e for e in events if e.event == "tool_result")
+    assert tr.data["is_error"] is False
+    mcp_mock.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_write_tool_declined_returns_is_error_no_dispatch():
+    import asyncio
+    from deribit_trading.agent.loop import resolve_confirmation
+
+    turn1 = _make_place_order_turn()
+    turn2 = [
+        _chunk(_delta(content="Ok, declined."), finish_reason="stop"),
+        _chunk(usage=_usage(8, 3, 11)),
+    ]
+    client = _make_client([turn1, turn2])
+    mcp_mock = AsyncMock()  # should NOT be called
+    dispatcher = ToolDispatcher(mcp_mock)
+
+    events: list[SSEEvent] = []
+
+    async def _drive():
+        async for ev in agent_chat(
+            client=client, config=CFG, system_prompt="sys",
+            user_messages=[{"role": "user", "content": "place a buy order"}],
+            tools=[], dispatcher=dispatcher, max_turns=15, write_enabled=True,
+        ):
+            events.append(ev)
+            if ev.event == "confirmation_required":
+                await asyncio.sleep(0.01)
+                resolve_confirmation(ev.data["tool_call_id"], False)
+
+    await _drive()
+
+    tr = next(e for e in events if e.event == "tool_result")
+    assert tr.data["is_error"] is True
+    assert "declined" in tr.data["output"].lower()
+    mcp_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_write_tool_timeout_returns_is_error_no_dispatch(monkeypatch):
+    """If user doesn't resolve within timeout, tool_result is_error with timeout reason."""
+    import deribit_trading.agent.loop as loop_mod
+
+    # Shrink timeout so the test is fast
+    monkeypatch.setattr(loop_mod, "CONFIRMATION_TIMEOUT_SECONDS", 0.1)
+
+    turn1 = _make_place_order_turn()
+    turn2 = [
+        _chunk(_delta(content="Timed out."), finish_reason="stop"),
+        _chunk(usage=_usage(6, 2, 8)),
+    ]
+    client = _make_client([turn1, turn2])
+    mcp_mock = AsyncMock()
+    dispatcher = ToolDispatcher(mcp_mock)
+
+    events: list[SSEEvent] = []
+    async for ev in agent_chat(
+        client=client, config=CFG, system_prompt="sys",
+        user_messages=[{"role": "user", "content": "place a buy order"}],
+        tools=[], dispatcher=dispatcher, max_turns=15, write_enabled=True,
+    ):
+        events.append(ev)
+        # never resolve
+
+    tr = next(e for e in events if e.event == "tool_result")
+    assert tr.data["is_error"] is True
+    assert "timed out" in tr.data["output"].lower()
+    mcp_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_write_tool_with_write_disabled_returns_is_error_without_card():
+    """Defense-in-depth: if LLM synthesizes a write call while write_enabled=false,
+    reject immediately without confirmation_required."""
+    turn1 = _make_place_order_turn()
+    turn2 = [
+        _chunk(_delta(content="Sorry, locked."), finish_reason="stop"),
+        _chunk(usage=_usage(2, 2, 4)),
+    ]
+    client = _make_client([turn1, turn2])
+    mcp_mock = AsyncMock()
+    dispatcher = ToolDispatcher(mcp_mock)
+
+    events: list[SSEEvent] = []
+    async for ev in agent_chat(
+        client=client, config=CFG, system_prompt="sys",
+        user_messages=[{"role": "user", "content": "x"}],
+        tools=[], dispatcher=dispatcher, max_turns=15,
+        write_enabled=False,
+    ):
+        events.append(ev)
+
+    assert not any(e.event == "confirmation_required" for e in events)
+    tr = next(e for e in events if e.event == "tool_result")
+    assert tr.data["is_error"] is True
+    assert "write mode is off" in tr.data["output"].lower()
+    mcp_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_audit_repo_records_decision():
+    import asyncio
+    from deribit_trading.agent.loop import resolve_confirmation
+
+    turn1 = _make_place_order_turn()
+    turn2 = [
+        _chunk(_delta(content="ok"), finish_reason="stop"),
+        _chunk(usage=_usage(1, 1, 2)),
+    ]
+    client = _make_client([turn1, turn2])
+    dispatcher = ToolDispatcher(AsyncMock(return_value=[MagicMock(text='{}', type="text")]))
+
+    captured: list[dict] = []
+    audit_repo = MagicMock()
+    audit_repo.record = AsyncMock(side_effect=lambda d: captured.append(d))
+
+    async def _drive():
+        async for ev in agent_chat(
+            client=client, config=CFG, system_prompt="sys",
+            user_messages=[{"role": "user", "content": "x"}],
+            tools=[], dispatcher=dispatcher, max_turns=15,
+            audit_repo=audit_repo, env="testnet", write_enabled=True,
+        ):
+            if ev.event == "confirmation_required":
+                await asyncio.sleep(0.01)
+                resolve_confirmation(ev.data["tool_call_id"], True)
+
+    await _drive()
+
+    assert len(captured) == 1
+    audit_row = captured[0]
+    assert audit_row["decision"] == "confirmed"
+    assert audit_row["tool_name"] == "place_order"
+    assert audit_row["env"] == "testnet"
+    assert audit_row["tool_call_id"] == "tc_w1"
+
+
+# ── Dispatcher: error-text reclassification ───────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_recognizes_error_text_prefix_as_is_error():
+    """mcp_server.call_tool wraps exceptions as 'Error: ClassName: msg' text;
+    dispatcher must surface this as is_error=True so the agent doesn't keep
+    retrying a doomed call (e.g. Deribit -32602 Invalid params)."""
+    err_content = MagicMock()
+    err_content.text = "Error: DeribitAPIError: Deribit API error -32602: Invalid params"
+    mcp_mock = AsyncMock(return_value=[err_content])
+    dispatcher = ToolDispatcher(mcp_mock)
+
+    output, is_error = await dispatcher.dispatch(
+        "place_order", {"instrument_name": "BTC-PERPETUAL", "amount": 1}
+    )
+    assert is_error is True
+    assert "Invalid params" in output
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_normal_text_not_marked_as_error():
+    ok_content = MagicMock()
+    ok_content.text = '{"order_id":"ord_123","status":"filled"}'
+    mcp_mock = AsyncMock(return_value=[ok_content])
+    dispatcher = ToolDispatcher(mcp_mock)
+
+    output, is_error = await dispatcher.dispatch("place_order", {"amount": 10})
+    assert is_error is False
+    assert output["order_id"] == "ord_123"
