@@ -300,6 +300,11 @@ function AiAgentCard() {
             </span>
           </div>
         )}
+
+        <p className="text-overline text-secondary leading-relaxed mt-3">
+          Write mode allows Vida to place / cancel orders, gated by a per-call
+          confirmation card. Toggle it from the lock icon in the chat header.
+        </p>
       </div>
     </Card>
   );

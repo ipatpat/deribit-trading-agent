@@ -1,13 +1,20 @@
 import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
-import { chatStream, type ChatRequest } from '../api/aiAgent';
+import { chatStream, confirmTool as _confirmToolRequest, type ChatRequest } from '../api/aiAgent';
 
 export type Role = 'user' | 'assistant' | 'system';
 
 export type ContentBlock =
   | { type: 'text'; text: string }
   | { type: 'tool_use'; tool_name: string; tool_input: unknown; id: string; status?: 'pending' | 'success' | 'error' }
-  | { type: 'tool_result'; tool_use_id: string; output: unknown; is_error?: boolean };
+  | { type: 'tool_result'; tool_use_id: string; output: unknown; is_error?: boolean }
+  | {
+      type: 'confirmation_pending';
+      tool_call_id: string;
+      tool_name: string;
+      tool_input: unknown;
+      summary: string;
+    };
 
 export interface ChatMessage {
   id: string;
@@ -34,6 +41,11 @@ interface ChatState {
   pageContext: PageContext;
   tools: McpTool[];
 
+  // Write mode: master toggle for whether write tools are exposed to the LLM.
+  // Persisted across reloads (users expect to stay in "trading session" mode).
+  // Each individual write tool call still requires per-call confirmation.
+  writeEnabled: boolean;
+
   // Streaming state (not persisted)
   loading: boolean;
   error: string | null;
@@ -47,6 +59,8 @@ interface ChatState {
   clearMessages: () => void;
   sendMessage: (text: string) => Promise<void>;
   abort: () => void;
+  toggleWriteMode: () => void;
+  confirmTool: (toolCallId: string, confirmed: boolean, reason?: string) => Promise<void>;
 }
 
 const CHAT_STORE_VERSION = 1;
@@ -111,6 +125,7 @@ export const useChatStore = create<ChatState>()(
       draft: '',
       pageContext: { route: '/' },
       tools: [],
+      writeEnabled: false,
       loading: false,
       error: null,
 
@@ -121,6 +136,14 @@ export const useChatStore = create<ChatState>()(
       setDraft: (draft) => set({ draft }),
       setPageContext: (pageContext) => set({ pageContext }),
       clearMessages: () => set({ messages: [], error: null }),
+      toggleWriteMode: () => set((s) => ({ writeEnabled: !s.writeEnabled })),
+      confirmTool: async (toolCallId, confirmed, reason) => {
+        try {
+          await _confirmToolRequest(toolCallId, confirmed, reason);
+        } catch (err) {
+          set({ error: `Failed to send confirmation: ${(err as Error).message}` });
+        }
+      },
 
       abort: () => {
         if (_activeController) {
@@ -173,7 +196,11 @@ export const useChatStore = create<ChatState>()(
 
         try {
           for await (const evt of chatStream(
-            { messages: backendMessages as ChatRequest['messages'], page_context: stateAtSend.pageContext },
+            {
+              messages: backendMessages as ChatRequest['messages'],
+              page_context: stateAtSend.pageContext,
+              write_enabled: stateAtSend.writeEnabled,
+            },
             controller.signal,
           )) {
             // Apply each event by mutating the assistant message
@@ -225,6 +252,19 @@ export const useChatStore = create<ChatState>()(
                   }
                   break;
                 }
+                case 'confirmation_required': {
+                  // Push a confirmation_pending block — UI renders ConfirmationCard
+                  // and the user's click triggers store.confirmTool(...) which
+                  // POSTs the decision back to the paused agent loop.
+                  last.content.push({
+                    type: 'confirmation_pending',
+                    tool_call_id: evt.data.tool_call_id,
+                    tool_name: evt.data.name,
+                    tool_input: evt.data.args,
+                    summary: evt.data.summary,
+                  });
+                  break;
+                }
                 case 'tool_result': {
                   // Update the matching tool_use status
                   const tc = last.content.find(
@@ -233,6 +273,15 @@ export const useChatStore = create<ChatState>()(
                   if (tc && tc.type === 'tool_use') {
                     (tc as any).status = evt.data.is_error ? 'error' : 'success';
                   }
+                  // If this tool_call had a pending confirmation, drop it now —
+                  // the UI transitions from ConfirmationCard back to ToolUseCard.
+                  last.content = last.content.filter(
+                    (b) =>
+                      !(
+                        b.type === 'confirmation_pending'
+                        && b.tool_call_id === evt.data.tool_use_id
+                      ),
+                  );
                   // Append a tool_result block for record
                   last.content.push({
                     type: 'tool_result',
@@ -290,12 +339,17 @@ export const useChatStore = create<ChatState>()(
       partialize: (state) => ({
         open: state.open,
         messages: state.messages,
+        writeEnabled: state.writeEnabled,
       }),
       migrate: (persistedState, version) => {
         if (version < CHAT_STORE_VERSION) {
-          return { open: false, messages: [] };
+          return { open: false, messages: [], writeEnabled: false };
         }
-        return persistedState as { open: boolean; messages: ChatMessage[] };
+        return persistedState as {
+          open: boolean;
+          messages: ChatMessage[];
+          writeEnabled: boolean;
+        };
       },
     },
   ),

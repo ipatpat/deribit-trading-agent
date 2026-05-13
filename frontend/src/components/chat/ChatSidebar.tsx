@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { X, Send, Sparkles, StopCircle, Trash2 } from 'lucide-react';
+import { X, Send, Sparkles, StopCircle, Trash2, Lock, Unlock } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { useChatStore, type ChatMessage, type ContentBlock } from '../../stores/chat';
@@ -7,6 +7,7 @@ import { useSmartOrdersStore } from '../../stores/smartOrders';
 import { getAiAgentConfig } from '../../api/aiAgent';
 import ChatColdStart from './ChatColdStart';
 import ClearChatModal from './ClearChatModal';
+import ConfirmationCard from './ConfirmationCard';
 import ThinkingPlaceholder from './ThinkingPlaceholder';
 import ToolUseCard from './ToolUseCard';
 import { AI_NAME } from './identity';
@@ -16,9 +17,12 @@ function MessageBubble({ message }: { message: ChatMessage }) {
   const isUser = message.role === 'user';
   // Group tool_use + tool_result by id so we can render unified cards
   const toolResults = new Map<string, ContentBlock>();
+  const pendingConfirmIds = new Set<string>();
   for (const b of message.content) {
     if (b.type === 'tool_result') {
       toolResults.set(b.tool_use_id, b);
+    } else if (b.type === 'confirmation_pending') {
+      pendingConfirmIds.add(b.tool_call_id);
     }
   }
 
@@ -75,6 +79,10 @@ function MessageBubble({ message }: { message: ChatMessage }) {
             );
           }
           if (block.type === 'tool_use') {
+            if (pendingConfirmIds.has(block.id)) {
+              // ConfirmationCard takes over for this tool_call until resolved.
+              return null;
+            }
             const result = toolResults.get(block.id);
             return (
               <ToolUseCard
@@ -84,6 +92,17 @@ function MessageBubble({ message }: { message: ChatMessage }) {
                 status={block.status}
                 result={result?.type === 'tool_result' ? result.output : undefined}
                 isError={result?.type === 'tool_result' ? result.is_error : false}
+              />
+            );
+          }
+          if (block.type === 'confirmation_pending') {
+            return (
+              <ConfirmationCard
+                key={block.tool_call_id}
+                toolCallId={block.tool_call_id}
+                toolName={block.tool_name}
+                toolInput={block.tool_input}
+                summary={block.summary}
               />
             );
           }
@@ -104,6 +123,8 @@ function ChatSidebar() {
   const sendMessage = useChatStore((s) => s.sendMessage);
   const abort = useChatStore((s) => s.abort);
   const clearMessages = useChatStore((s) => s.clearMessages);
+  const writeEnabled = useChatStore((s) => s.writeEnabled);
+  const toggleWriteMode = useChatStore((s) => s.toggleWriteMode);
 
   const smartBarVisible = useSmartOrdersStore((s) => s.orders.length > 0);
 
@@ -207,6 +228,24 @@ function ChatSidebar() {
           {AI_NAME}
         </span>
         <div className="flex items-center gap-1">
+          <button
+            type="button"
+            onClick={toggleWriteMode}
+            aria-label={writeEnabled ? 'Switch to read-only mode' : 'Enable AI trading'}
+            title={
+              writeEnabled
+                ? 'AI trading is ON. Vida can place / cancel orders (each requires confirmation).'
+                : 'Read-only mode. Vida can analyze but cannot place orders. Click to enable AI trading.'
+            }
+            className={`flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-semibold uppercase tracking-wider transition-all ${
+              writeEnabled
+                ? 'bg-accent text-white shadow-sm hover:bg-accent/90'
+                : 'bg-cream text-secondary hover:bg-cream-dark hover:text-primary'
+            }`}
+          >
+            {writeEnabled ? <Unlock size={11} /> : <Lock size={11} />}
+            <span>{writeEnabled ? 'AI trading' : 'Read only'}</span>
+          </button>
           {messages.length > 0 && (
             <button
               type="button"

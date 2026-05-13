@@ -8,6 +8,7 @@ const reset = () =>
     draft: '',
     pageContext: { route: '/' },
     tools: [],
+    writeEnabled: false,
     loading: false,
     error: null,
   });
@@ -135,6 +136,34 @@ describe('useChatStore', () => {
     const parsed = JSON.parse(raw!);
     expect(parsed.state.loading).toBeUndefined();
     expect(parsed.state.error).toBeUndefined();
+  });
+
+  it('writeEnabled defaults to false and toggles', () => {
+    expect(useChatStore.getState().writeEnabled).toBe(false);
+    useChatStore.getState().toggleWriteMode();
+    expect(useChatStore.getState().writeEnabled).toBe(true);
+    useChatStore.getState().toggleWriteMode();
+    expect(useChatStore.getState().writeEnabled).toBe(false);
+  });
+
+  it('writeEnabled is persisted (in partialize)', () => {
+    useChatStore.setState({ writeEnabled: true });
+    const raw = localStorage.getItem('chat-store');
+    const parsed = JSON.parse(raw!);
+    expect(parsed.state.writeEnabled).toBe(true);
+  });
+
+  it('confirmTool calls the backend confirm endpoint', async () => {
+    const spy = vi.fn().mockResolvedValue({ ok: true });
+    (global as any).fetch = spy.mockResolvedValue({ ok: true, json: async () => ({ ok: true }) } as any);
+    await useChatStore.getState().confirmTool('tc_xyz', true);
+    expect(spy).toHaveBeenCalled();
+    const url = spy.mock.calls[0][0];
+    const opts = spy.mock.calls[0][1];
+    expect(url).toMatch(/\/api\/v1\/agent\/confirm\/tc_xyz/);
+    expect(opts.method).toBe('POST');
+    const body = JSON.parse(opts.body);
+    expect(body.confirmed).toBe(true);
   });
 });
 

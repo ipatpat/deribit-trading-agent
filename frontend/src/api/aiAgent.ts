@@ -39,6 +39,7 @@ export interface ListModelsResult {
 export interface ChatRequest {
   messages: Array<{ role: 'user' | 'assistant' | 'system' | 'tool'; content: any; tool_call_id?: string; tool_calls?: any[] }>;
   page_context?: { route: string; instrument?: string };
+  write_enabled?: boolean;
 }
 
 // ── Settings CRUD ────────────────────────────────────────────────────────────
@@ -124,4 +125,20 @@ export async function* chatStream(
   }
 
   yield* parseSSEStream(resp, signal);
+}
+
+// ── Confirmation flow ────────────────────────────────────────────────────────
+export async function confirmTool(
+  toolCallId: string,
+  confirmed: boolean,
+  reason?: string,
+): Promise<void> {
+  const resp = await fetch(`/api/v1/agent/confirm/${encodeURIComponent(toolCallId)}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ confirmed, reason }),
+  });
+  if (!resp.ok) {
+    throw new Error(`POST /agent/confirm failed: HTTP ${resp.status}`);
+  }
 }
