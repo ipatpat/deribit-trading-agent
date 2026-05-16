@@ -51,6 +51,28 @@ def has_pending_confirmation(tool_call_id: str) -> bool:
     return future is not None and not future.done()
 
 
+def clear_pending_confirmations(reason: str = "account_switched") -> int:
+    """Failure-resolve every pending Future. Called during account switch
+    so the old chat's in-flight write decisions don't leak into the new
+    account context. Returns the number of confirmations cleared."""
+    n = 0
+    for tcid, future in list(_pending_confirmations.items()):
+        if not future.done():
+            # Set False so the loop's await_for sees a "declined" result and
+            # emits a clean tool_result is_error rather than dangling.
+            try:
+                future.set_result(False)
+            except asyncio.InvalidStateError:
+                pass
+            n += 1
+    _pending_confirmations.clear()
+    if n:
+        logger.info(
+            "Cleared %d pending confirmation(s) (reason=%s)", n, reason
+        )
+    return n
+
+
 # ── SSE event ─────────────────────────────────────────────────────────────────
 @dataclass
 class SSEEvent:
@@ -122,7 +144,7 @@ async def agent_chat(
     dispatcher: ToolDispatcher,
     max_turns: int = 15,
     audit_repo: Any = None,
-    env: str = "unknown",
+    account_id: str = "unknown",
     write_enabled: bool = False,
 ) -> AsyncIterator[SSEEvent]:
     """Run a multi-turn agent loop, yielding SSE events.
@@ -137,7 +159,8 @@ async def agent_chat(
         max_turns: hard cap on tool-call turns.
         audit_repo: optional WriteAuditRepo; if provided, each write tool
             decision (confirmed / declined / timeout) is recorded.
-        env: 'production' / 'testnet' — passed through to audit rows.
+        account_id: the active account's uuid — written to each audit row so
+            per-account audit history can be filtered.
     """
     # Conversation state
     messages: list[dict[str, Any]] = [{"role": "system", "content": system_prompt}]
@@ -338,7 +361,7 @@ async def agent_chat(
                                 "summary": summary,
                                 "decision": decision,
                                 "decision_reason": decision_reason,
-                                "env": env,
+                                "account_id": account_id,
                             })
                         except Exception as exc:  # noqa: BLE001
                             logger.warning("Audit log failed for %s: %s", tc_id, exc)

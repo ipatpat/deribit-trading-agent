@@ -7,7 +7,7 @@ from .database import Database
 
 async def get_equity_bucketed(
     db: Database,
-    env: str,
+    account_id: str,
     currency: str,
     since: int,
     until: int,
@@ -19,7 +19,7 @@ async def get_equity_bucketed(
 
     Args:
         db: Database instance.
-        env: Environment name.
+        account_id: Account uuid (or legacy env string for v3-era rows).
         currency: Currency (e.g. "BTC").
         since: Start timestamp in milliseconds.
         until: End timestamp in milliseconds.
@@ -40,10 +40,10 @@ async def get_equity_bucketed(
                AVG(realized_pnl) AS avg_realized_pnl,
                COUNT(*) AS point_count
            FROM equity_snapshots
-           WHERE env = ? AND currency = ? AND timestamp >= ? AND timestamp <= ?
+           WHERE account_id = ? AND currency = ? AND timestamp >= ? AND timestamp <= ?
            GROUP BY bucket_time
            ORDER BY bucket_time ASC""",
-        (bucket_ms, bucket_ms, env, currency, since, until),
+        (bucket_ms, bucket_ms, account_id, currency, since, until),
     )
     rows = await cursor.fetchall()
     return [

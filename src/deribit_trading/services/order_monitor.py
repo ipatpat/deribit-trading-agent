@@ -7,6 +7,7 @@ import logging
 from typing import Any, Callable, Coroutine
 
 from ..client import DeribitClient
+from ..config.account_manager import AccountManager
 from ..persistence import Database, OrderRepo, TradeRepo
 
 logger = logging.getLogger(__name__)
@@ -22,14 +23,21 @@ class OrderMonitor:
         client: DeribitClient,
         db: Database,
         env: str = "testnet",
+        account_manager: AccountManager | None = None,
     ) -> None:
         self._client = client
         self._order_repo = OrderRepo(db)
         self._trade_repo = TradeRepo(db)
         self._env = env
+        self._account_manager = account_manager
         self._order_callbacks: list[EventCallback] = []
         self._trade_callbacks: list[EventCallback] = []
         self._subscribed_instruments: set[str] = set()
+
+    def _current_account_id(self) -> str:
+        if self._account_manager and self._account_manager.active_id:
+            return self._account_manager.active_id
+        return self._env
 
     def on_order_change(self, callback: EventCallback) -> None:
         self._order_callbacks.append(callback)
@@ -83,7 +91,7 @@ class OrderMonitor:
         try:
             await self._order_repo.save(
                 order_id=data.get("order_id", ""),
-                env=self._env,
+                account_id=self._current_account_id(),
                 timestamp=data.get("creation_timestamp", 0),
                 instrument_name=data.get("instrument_name", ""),
                 direction=data.get("direction", ""),
@@ -101,7 +109,7 @@ class OrderMonitor:
         try:
             await self._trade_repo.save(
                 trade_id=data.get("trade_id", ""),
-                env=self._env,
+                account_id=self._current_account_id(),
                 timestamp=data.get("timestamp", 0),
                 instrument_name=data.get("instrument_name", ""),
                 direction=data.get("direction", ""),

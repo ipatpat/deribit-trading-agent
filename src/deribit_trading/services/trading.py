@@ -10,6 +10,7 @@ from ..models import Order, OrderType, Position, TimeInForce, Trade, TriggerType
 from ..persistence import Database, OrderRepo, TradeRepo
 
 if TYPE_CHECKING:
+    from ..config.account_manager import AccountManager
     from ..smart_order.engine import SmartOrder, SmartOrderEngine
     from ..smart_order.types import SmartOrderConfig
     from .risk_manager import RiskManager
@@ -23,12 +24,19 @@ class TradingService:
         client: DeribitClient,
         env_manager: EnvManager,
         db: Database,
+        account_manager: AccountManager | None = None,
     ) -> None:
         self._client = client
         self._env = env_manager
+        self._account_manager = account_manager
         self._order_repo = OrderRepo(db)
         self._trade_repo = TradeRepo(db)
         self._risk_manager: RiskManager | None = None
+
+    def _current_account_id(self) -> str:
+        if self._account_manager and self._account_manager.active_id:
+            return self._account_manager.active_id
+        return self._env.current_env
 
     def set_risk_manager(self, rm: RiskManager) -> None:
         self._risk_manager = rm
@@ -199,7 +207,7 @@ class TradingService:
     async def _persist_order(self, order: Order) -> None:
         await self._order_repo.save(
             order_id=order.order_id,
-            env=self._env.current_env,
+            account_id=self._current_account_id(),
             timestamp=order.creation_timestamp,
             instrument_name=order.instrument_name,
             direction=order.direction,
@@ -214,7 +222,7 @@ class TradingService:
     async def _persist_trade(self, trade: Trade) -> None:
         await self._trade_repo.save(
             trade_id=trade.trade_id,
-            env=self._env.current_env,
+            account_id=self._current_account_id(),
             timestamp=trade.timestamp,
             instrument_name=trade.instrument_name,
             direction=trade.direction,

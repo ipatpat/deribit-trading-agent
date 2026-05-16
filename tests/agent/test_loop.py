@@ -524,7 +524,7 @@ async def test_audit_repo_records_decision():
             client=client, config=CFG, system_prompt="sys",
             user_messages=[{"role": "user", "content": "x"}],
             tools=[], dispatcher=dispatcher, max_turns=15,
-            audit_repo=audit_repo, env="testnet", write_enabled=True,
+            audit_repo=audit_repo, account_id="testnet", write_enabled=True,
         ):
             if ev.event == "confirmation_required":
                 await asyncio.sleep(0.01)
@@ -536,7 +536,7 @@ async def test_audit_repo_records_decision():
     audit_row = captured[0]
     assert audit_row["decision"] == "confirmed"
     assert audit_row["tool_name"] == "place_order"
-    assert audit_row["env"] == "testnet"
+    assert audit_row["account_id"] == "testnet"
     assert audit_row["tool_call_id"] == "tc_w1"
 
 

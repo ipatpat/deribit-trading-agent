@@ -241,7 +241,7 @@ async def test_order_monitor_auto_subscribe():
     await db.open()
 
     try:
-        monitor = OrderMonitor(client, db, env="testnet")
+        monitor = OrderMonitor(client, db, account_id="testnet")
         # This should not raise
         await monitor.subscribe_currency("any")
     finally:

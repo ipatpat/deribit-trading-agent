@@ -10,9 +10,17 @@ from pathlib import Path
 
 from .client import DeribitClient
 from .client.connection import WebSocketConnection
-from .config import EnvManager, Environment, KeyStore
+from .config import (
+    Account,
+    AccountManager,
+    EnvManager,
+    Environment,
+    KeyStore,
+    bootstrap_accounts_from_keystore,
+    resolve_endpoint,
+)
 from .mcp_server import run_mcp_server
-from .persistence import Database
+from .persistence import AccountRepo, Database
 from .rest_api import create_rest_app
 from .services import MarketDataService, PortfolioService, TradingService
 from .services.order_monitor import OrderMonitor
@@ -45,6 +53,8 @@ class ServiceContainer:
         order_monitor: OrderMonitor,
         risk_manager: RiskManager,
         key_store: KeyStore | None = None,
+        account_manager: AccountManager | None = None,
+        account_repo: AccountRepo | None = None,
     ) -> None:
         self.client = client
         self.env_manager = env_manager
@@ -56,7 +66,110 @@ class ServiceContainer:
         self.order_monitor = order_monitor
         self.risk_manager = risk_manager
         self.key_store = key_store
+        self.account_manager = account_manager
+        self.account_repo = account_repo
         self._start_time = time.time()
+
+    async def deactivate(self) -> None:
+        """Tear down the live trading session: clear pending confirmations,
+        reset engines, disconnect the WebSocket, and clear the active account
+        row. Used when deleting the active account so we don't leave dangling
+        state. Leaves the system in the same "no active account" condition
+        the boot path handles via the onboarding banner.
+        """
+        from .agent.loop import clear_pending_confirmations
+        clear_pending_confirmations(reason="account_deactivated")
+        if self.smart_engine:
+            await self.smart_engine.reset()
+        if self.portfolio:
+            await self.portfolio.reset_cache()
+        try:
+            await self.client.disconnect()
+        except Exception:  # noqa: BLE001
+            logger.exception("disconnect during deactivate failed (continuing)")
+        if self.account_repo:
+            await self.account_repo.clear_active()
+        if self.account_manager:
+            self.account_manager.set_active_unchecked(None)
+
+    async def activate_account(self, account_id: str) -> dict:
+        """Switch the active account: disconnect → reset engines → reconnect.
+
+        Raises:
+            ValueError: account_id not found.
+            AccountSwitchError: reconnect/auth failed (active stays unchanged).
+        """
+        if not self.account_repo or not self.account_manager or not self.key_store:
+            raise RuntimeError("Account management not initialised in container")
+
+        row = await self.account_repo.get(account_id)
+        if not row:
+            raise ValueError(f"Account {account_id} not found")
+
+        endpoint_cfg = resolve_endpoint(row["endpoint"])
+        secret_plain = self.key_store.decrypt(row["client_secret"])
+        new_account = Account(
+            id=row["id"],
+            alias=row["alias"],
+            endpoint=row["endpoint"],
+            client_id=row["client_id"],
+            created_at=row["created_at"],
+            last_used_at=row["last_used_at"],
+        )
+
+        # Disconnect + reset all client-side state.
+        from .agent.loop import clear_pending_confirmations
+        clear_pending_confirmations(reason="account_switched")
+        await self.smart_engine.reset()
+        await self.portfolio.reset_cache()
+        await self.client.disconnect()
+
+        # Build new client wired to the target endpoint.
+        self.client._url = endpoint_cfg.ws_url
+        self.client._connection = WebSocketConnection(endpoint_cfg.ws_url)
+        from .client.rpc import JsonRpcManager
+        from .client.auth import AuthManager
+        self.client._rpc = JsonRpcManager(self.client._connection)
+        self.client._auth = AuthManager(self.client._rpc)
+        self.client._connection.set_on_reconnect(self.client._on_reconnect)
+        self.client._rpc.set_subscription_handler(self.client._on_subscription)
+        self.client._subscriptions.clear()
+        await self.client.connect()
+        await self.client.authenticate(row["client_id"], secret_plain)
+
+        # CRITICAL: flip the active account BEFORE resubscribing. Otherwise
+        # initial portfolio snapshots received during start_tracking get
+        # written with the previous account_id, corrupting per-account data
+        # (the bug we shipped in v4-rc1 had testnet sandbox values appearing
+        # under production rows because env_manager was flipped AFTER start_tracking).
+        self.account_manager.set_active_unchecked(new_account)
+        if hasattr(self.env_manager, "set_env"):
+            self.env_manager.set_env(
+                Environment.PRODUCTION if endpoint_cfg.is_production
+                else Environment.TESTNET
+            )
+        self.order_monitor._env = (
+            "production" if endpoint_cfg.is_production else "testnet"
+        )
+
+        # Resubscribe portfolio + order monitor (now tagging writes correctly).
+        await self.portfolio.start_tracking("BTC")
+        await self.portfolio.start_tracking("ETH")
+        await self.order_monitor.subscribe_currency("any")
+
+        # Persist state.
+        now_ms = int(time.time() * 1000)
+        await self.account_repo.set_active(account_id)
+        await self.account_repo.touch_last_used(account_id, now_ms)
+
+        return {
+            "id": new_account.id,
+            "alias": new_account.alias,
+            "endpoint": new_account.endpoint,
+            "client_id": new_account.client_id,
+            "connected": self.client.is_connected,
+            "authenticated": self.client.is_authenticated,
+        }
 
     async def reconnect(self, env_str: str, client_id: str, client_secret: str) -> dict:
         """Hot-switch environment and credentials without restarting."""
@@ -120,14 +233,9 @@ async def build_container(env: Environment) -> ServiceContainer:
     db = Database(db_path)
     await db.open()
 
-    # Client
-    client = DeribitClient(env_manager.ws_url)
-    await client.connect()
-
-    # Authenticate if credentials available
+    # Keystore + AccountRepo + AccountManager
     keys_db = os.getenv("DERIBIT_KEYS_DB", DEFAULT_KEYS_DB_PATH)
     master_pw = os.getenv("DERIBIT_MASTER_PASSWORD", "deribit-local")
-
     key_store = KeyStore(keys_db, master_pw)
 
     # Seed KeyStore from environment variables / .env if keys not already stored
@@ -145,35 +253,87 @@ async def build_container(env: Environment) -> ServiceContainer:
         key_store.add_key(Environment.PRODUCTION, "main", prod_id, prod_secret, "account:read,trade:read_write")
         logger.info("Seeded production credentials from env vars")
 
-    # Authenticate with current env's key
-    keys = key_store.list_keys(env)
-    if keys:
-        key = key_store.get_key(env, keys[0].name)
-        if key:
-            await client.authenticate(key.client_id, key.client_secret)
+    account_repo = AccountRepo(db)
+    account_manager = AccountManager()
+    # One-shot v3→v4 data bootstrap (no-op if accounts table already populated).
+    await bootstrap_accounts_from_keystore(db, account_repo, key_store)
+
+    # Resolve active account (may be None — fresh install with no keys).
+    active_id = await account_repo.get_active_id()
+    active_row = await account_repo.get(active_id) if active_id else None
+
+    # Decide endpoint + credentials based on active account, falling back to
+    # the legacy env-based URL if there's no active account yet.
+    if active_row:
+        endpoint_cfg = resolve_endpoint(active_row["endpoint"])
+        ws_url = endpoint_cfg.ws_url
+        # Keep env_manager loosely in sync so legacy paths still emit the
+        # right env label until they migrate to account_manager.
+        env_manager.set_env(
+            Environment.PRODUCTION if endpoint_cfg.is_production
+            else Environment.TESTNET
+        )
+        active_account_obj = Account(
+            id=active_row["id"],
+            alias=active_row["alias"],
+            endpoint=active_row["endpoint"],
+            client_id=active_row["client_id"],
+            created_at=active_row["created_at"],
+            last_used_at=active_row["last_used_at"],
+        )
+        account_manager.set_active_unchecked(active_account_obj)
     else:
-        # Last fallback: generic env vars
-        fallback_id = os.getenv("DERIBIT_CLIENT_ID", "")
-        fallback_secret = os.getenv("DERIBIT_CLIENT_SECRET", "")
-        if fallback_id and fallback_secret:
-            await client.authenticate(fallback_id, fallback_secret)
+        ws_url = env_manager.ws_url
+        active_account_obj = None
 
-    # Services
+    client = DeribitClient(ws_url)
+    if active_row:
+        # Connect + authenticate the active account.
+        await client.connect()
+        try:
+            secret_plain = key_store.decrypt(active_row["client_secret"])
+            await client.authenticate(active_row["client_id"], secret_plain)
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "Failed to authenticate active account %s on startup",
+                active_row["alias"],
+            )
+        # Touch last_used to mark this boot.
+        await account_repo.touch_last_used(active_row["id"], int(time.time() * 1000))
+    else:
+        logger.warning(
+            "No active account on boot — skipping WebSocket connect. "
+            "Configure an account via /api/v1/accounts before trading."
+        )
+
+    # Services — pass account_manager so per-account writes use the active
+    # account UUID rather than env_manager.current_env (which is a string
+    # shared across all accounts on the same env).
     market_data = MarketDataService(client)
-    trading = TradingService(client, env_manager, db)
-    portfolio = PortfolioService(client, env_manager, db)
+    trading = TradingService(client, env_manager, db, account_manager=account_manager)
+    portfolio = PortfolioService(client, env_manager, db, account_manager=account_manager)
 
-    # Start equity tracking (writes portfolio snapshots to DB)
-    await portfolio.start_tracking("BTC")
-    await portfolio.start_tracking("ETH")
+    # Start equity tracking (writes portfolio snapshots to DB) — only when
+    # we actually have a live, authenticated client.
+    if active_row:
+        await portfolio.start_tracking("BTC")
+        await portfolio.start_tracking("ETH")
 
     # Smart order engine
     smart_engine = SmartOrderEngine(client)
-    await smart_engine.start()
+    if active_row:
+        await smart_engine.start()
     trading.set_smart_engine(smart_engine)
 
-    # Order monitor
-    order_monitor = OrderMonitor(client, db, env=env)
+    # Order monitor — bind to env derived from active endpoint when present.
+    monitor_env = env
+    if active_row:
+        endpoint_cfg = resolve_endpoint(active_row["endpoint"])
+        monitor_env = (
+            Environment.PRODUCTION if endpoint_cfg.is_production
+            else Environment.TESTNET
+        )
+    order_monitor = OrderMonitor(client, db, env=monitor_env, account_manager=account_manager)
 
     # Connect order monitor to smart engine
     def _on_order_change(event: str, data: dict) -> None:
@@ -192,8 +352,9 @@ async def build_container(env: Environment) -> ServiceContainer:
     order_monitor.on_order_change(_on_order_change)
     order_monitor.on_trade(_on_trade)
 
-    # Auto-subscribe to all order/trade events
-    await order_monitor.subscribe_currency("any")
+    # Auto-subscribe to all order/trade events (only when authenticated).
+    if active_row:
+        await order_monitor.subscribe_currency("any")
 
     # Risk manager
     risk_manager = RiskManager(RiskConfig(
@@ -206,12 +367,15 @@ async def build_container(env: Environment) -> ServiceContainer:
     smart_engine.set_risk_manager(risk_manager)
     await risk_manager.start_periodic_check()
 
-    # Market data recorder
-    recorder = MarketDataRecorder(client, db, env=env)
-    default_instruments = os.getenv(
-        "DERIBIT_RECORD_INSTRUMENTS", "BTC-PERPETUAL,ETH-PERPETUAL"
-    ).split(",")
-    await recorder.start_recording([i.strip() for i in default_instruments if i.strip()])
+    # Market data recorder — only when connected.
+    recorder = MarketDataRecorder(client, db, env=monitor_env)
+    if active_row:
+        default_instruments = os.getenv(
+            "DERIBIT_RECORD_INSTRUMENTS", "BTC-PERPETUAL,ETH-PERPETUAL"
+        ).split(",")
+        await recorder.start_recording(
+            [i.strip() for i in default_instruments if i.strip()]
+        )
 
     return ServiceContainer(
         client=client,
@@ -224,6 +388,8 @@ async def build_container(env: Environment) -> ServiceContainer:
         order_monitor=order_monitor,
         risk_manager=risk_manager,
         key_store=key_store,
+        account_manager=account_manager,
+        account_repo=account_repo,
     )
 
 

@@ -104,6 +104,19 @@ class SmartOrderEngine:
             if so.state == SmartOrderState.ACTIVE:
                 await self.cancel_smart_order(so.id)
 
+    async def reset(self) -> None:
+        """Drop all client-side smart-order state without touching Deribit.
+
+        Used during account switch: the new account has no relationship to
+        the previous account's in-flight smart orders, so we forget them
+        locally. The orders they spawned on Deribit remain on the exchange
+        for the previous account's owner to handle (e.g. by switching back).
+        """
+        await self._throttle.stop()
+        self._orders.clear()
+        logger.info("SmartOrderEngine reset (forgot all client-side state)")
+        await self._throttle.start()
+
     def on_event(self, callback: SmartOrderCallback) -> None:
         self._event_callbacks.append(callback)
 

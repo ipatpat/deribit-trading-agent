@@ -60,12 +60,12 @@ async def client():
 async def test_equity_snapshot_crud(db: Database):
     repo = EquitySnapshotRepo(db)
     await repo.save(
-        timestamp=1000000, env="testnet", currency="BTC",
+        timestamp=1000000, account_id="testnet", currency="BTC",
         equity=1.5, balance=1.5, margin_balance=0.1,
         unrealized_pnl=0.0, realized_pnl=0.0,
     )
     await repo.save(
-        timestamp=2000000, env="testnet", currency="BTC",
+        timestamp=2000000, account_id="testnet", currency="BTC",
         equity=1.6, balance=1.5, margin_balance=0.1,
         unrealized_pnl=0.1, realized_pnl=0.0,
     )
@@ -80,11 +80,11 @@ async def test_equity_env_isolation(db: Database):
     """Production and testnet data should be isolated."""
     repo = EquitySnapshotRepo(db)
     await repo.save(
-        timestamp=1000, env="testnet", currency="BTC",
+        timestamp=1000, account_id="testnet", currency="BTC",
         equity=1.0, balance=1.0,
     )
     await repo.save(
-        timestamp=1000, env="production", currency="BTC",
+        timestamp=1000, account_id="production", currency="BTC",
         equity=99.0, balance=99.0,
     )
     testnet_rows = await repo.get_range("testnet", "BTC", 0, 9999)
@@ -102,7 +102,7 @@ async def test_bucketed_query(db: Database):
     # Insert 3 points in the same 1-hour bucket
     for i, equity in enumerate([100.0, 90.0, 110.0]):
         await repo.save(
-            timestamp=1000 + i * 1000, env="testnet", currency="BTC",
+            timestamp=1000 + i * 1000, account_id="testnet", currency="BTC",
             equity=equity, balance=100.0,
         )
 
@@ -143,10 +143,11 @@ async def test_env_manager():
     # Should allow trading on testnet regardless
     mgr.check_trading_allowed()  # no exception
 
-    # Switch to production
+    # Switch to production — EnvManager defaults the production endpoint to
+    # tibired (matches the runtime default).
     mgr.set_env(Environment.PRODUCTION)
     assert mgr.is_production()
-    assert mgr.ws_url == "wss://www.deribit.com/ws/api/v2"
+    assert mgr.ws_url == "wss://www.tibired.com/ws/api/v2"
 
     # Should block trading when allow_live_trading=False
     with pytest.raises(PermissionError):

@@ -7,6 +7,7 @@ from typing import Any
 
 from ..client import DeribitClient
 from ..config import EnvManager
+from ..config.account_manager import AccountManager
 from ..models import AccountSummary, GreeksSummary, Position, PortfolioSnapshot
 from ..persistence import (
     Database,
@@ -29,13 +30,32 @@ class PortfolioService:
         client: DeribitClient,
         env_manager: EnvManager,
         db: Database,
+        account_manager: AccountManager | None = None,
     ) -> None:
         self._client = client
         self._env = env_manager
+        self._account_manager = account_manager
         self._equity_repo = EquitySnapshotRepo(db)
         self._position_repo = PositionHistoryRepo(db)
         self._db = db
         self._tracking = False
+
+    def _current_account_id(self) -> str:
+        """Resolve the active account UUID for per-account writes/reads.
+
+        Falls back to env_manager's env string for unit tests and pre-bootstrap
+        callers where account_manager isn't wired."""
+        if self._account_manager and self._account_manager.active_id:
+            return self._account_manager.active_id
+        return self._env.current_env
+
+    async def reset_cache(self) -> None:
+        """Forget all per-account state so the next start_tracking call
+        re-subscribes from scratch. Used during account switch."""
+        if hasattr(self, '_tracking_currencies'):
+            self._tracking_currencies.clear()
+        self._tracking = False
+        logger.info("PortfolioService cache reset")
 
     async def start_tracking(self, currency: str = "BTC") -> None:
         """Subscribe to portfolio updates and record all data."""
@@ -60,7 +80,7 @@ class PortfolioService:
         ts = data.get("creation_timestamp") or int(time.time() * 1000)
         await self._equity_repo.save(
             timestamp=ts,
-            env=self._env.current_env,
+            account_id=self._current_account_id(),
             currency=data.get("currency", ""),
             equity=data.get("equity", 0),
             balance=data.get("balance", 0),
@@ -82,10 +102,10 @@ class PortfolioService:
         Returns:
             Dict with 'data' (bucketed time series) and 'gaps' (offline intervals).
         """
-        env = self._env.current_env
+        account_id = self._current_account_id()
         bucket_ms = auto_bucket_ms(since, until, max_points)
 
-        data = await get_equity_bucketed(self._db, env, currency, since, until, bucket_ms)
+        data = await get_equity_bucketed(self._db, account_id, currency, since, until, bucket_ms)
 
         # Detect gaps (offline intervals)
         gaps: list[dict[str, int]] = []
@@ -175,7 +195,7 @@ class PortfolioService:
         ]
         await self._position_repo.save_snapshot(
             timestamp=int(time.time() * 1000),
-            env=self._env.current_env,
+            account_id=self._current_account_id(),
             positions=pos_dicts,
         )
 

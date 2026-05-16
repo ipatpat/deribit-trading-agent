@@ -180,39 +180,6 @@ export function getSettingsStatus(): Promise<{
   return request('/settings/status');
 }
 
-export function saveCredentials(params: {
-  client_id: string;
-  client_secret: string;
-  env: string;
-  endpoint?: string;
-}): Promise<Record<string, unknown>> {
-  return request('/settings/credentials', {
-    method: 'POST',
-    body: JSON.stringify(params),
-  });
-}
-
-export function switchEnv(env: string): Promise<Record<string, unknown>> {
-  return request('/settings/switch-env', {
-    method: 'POST',
-    body: JSON.stringify({ env }),
-  });
-}
-
-export function clearKeys(env: string): Promise<Record<string, unknown>> {
-  return request('/settings/clear-keys', {
-    method: 'POST',
-    body: JSON.stringify({ env }),
-  });
-}
-
-export function clearAccountData(env: string): Promise<Record<string, unknown>> {
-  return request('/settings/clear-account-data', {
-    method: 'POST',
-    body: JSON.stringify({ env }),
-  });
-}
-
 /* ── Payoff ── */
 
 export interface PayoffLeg {

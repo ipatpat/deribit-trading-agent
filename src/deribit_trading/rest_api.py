@@ -123,6 +123,35 @@ class SmartOrderActionRequest(BaseModel):
     action: str  # pause, resume, cancel, market
 
 
+def _id_tail(client_id: str) -> str:
+    """Last 4 chars of client_id, or the whole thing if shorter."""
+    return client_id[-4:] if len(client_id) >= 4 else client_id
+
+
+async def _probe_credentials(ws_url: str, client_id: str, client_secret: str) -> dict[str, Any]:
+    """Connect, authenticate, disconnect. Returns ok/auth_failed/connect_failed.
+
+    Used by the two test-credentials endpoints. Reuses DeribitClient so we
+    exercise the same code path as production.
+    """
+    from .client import DeribitClient
+    probe = DeribitClient(ws_url)
+    try:
+        await probe.connect()
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "stage": "connect", "error": str(e)}
+    try:
+        await probe.authenticate(client_id, client_secret)
+        return {"ok": True, "ws_url": ws_url}
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "stage": "authenticate", "error": str(e)}
+    finally:
+        try:
+            await probe.disconnect()
+        except Exception:  # noqa: BLE001
+            pass
+
+
 class HealthResponse(BaseModel):
     status: str
     env: str
@@ -837,84 +866,212 @@ def create_rest_app(
             "uptime_ms": int((time.time() - container._start_time) * 1000) if container else 0,
         }
 
-    @app.post("/api/v1/settings/credentials")
-    async def save_credentials(body: dict):
-        client_id = body.get("client_id", "")
-        client_secret = body.get("client_secret", "")
-        env = body.get("env", env_manager.current_env)
-        endpoint = body.get("endpoint")
+    # ── Accounts (multi-account management) ────────────────────────────
+
+    @app.get("/api/v1/accounts")
+    async def list_accounts() -> dict[str, Any]:
+        if not container or not container.account_repo:
+            raise HTTPException(503, "Account management unavailable")
+        rows = await container.account_repo.list_all()
+        active_id = await container.account_repo.get_active_id()
+        from .config import ENDPOINTS
+
+        def _row_dto(r: dict[str, Any]) -> dict[str, Any]:
+            secret_tail = ""
+            if container.key_store and r.get("client_secret"):
+                try:
+                    plain = container.key_store.decrypt(r["client_secret"])
+                    secret_tail = _id_tail(plain)
+                except Exception:  # noqa: BLE001
+                    secret_tail = ""
+            return {
+                "id": r["id"],
+                "alias": r["alias"],
+                "endpoint": r["endpoint"],
+                "client_id": "",  # never expose full id
+                "client_id_tail": _id_tail(r["client_id"]),
+                "client_secret_tail": secret_tail,
+                "is_active": r["id"] == active_id,
+                "endpoint_label": ENDPOINTS[r["endpoint"]].label
+                if r["endpoint"] in ENDPOINTS else r["endpoint"],
+                "is_production": ENDPOINTS[r["endpoint"]].is_production
+                if r["endpoint"] in ENDPOINTS else False,
+                "created_at": r["created_at"],
+                "last_used_at": r["last_used_at"],
+            }
+
+        return {
+            "accounts": [_row_dto(r) for r in rows],
+            "active_id": active_id,
+            "endpoints": [
+                {"id": k, "label": v.label, "is_production": v.is_production}
+                for k, v in ENDPOINTS.items()
+            ],
+        }
+
+    @app.get("/api/v1/accounts/active")
+    async def get_active_account() -> dict[str, Any]:
+        if not container or not container.account_repo:
+            raise HTTPException(503, "Account management unavailable")
+        active_id = await container.account_repo.get_active_id()
+        if not active_id:
+            return {"active": None}
+        row = await container.account_repo.get(active_id)
+        if not row:
+            return {"active": None}
+        from .config import ENDPOINTS
+        secret_tail = ""
+        if container.key_store and row.get("client_secret"):
+            try:
+                secret_tail = _id_tail(container.key_store.decrypt(row["client_secret"]))
+            except Exception:  # noqa: BLE001
+                secret_tail = ""
+        return {
+            "active": {
+                "id": row["id"],
+                "alias": row["alias"],
+                "endpoint": row["endpoint"],
+                "endpoint_label": ENDPOINTS[row["endpoint"]].label
+                if row["endpoint"] in ENDPOINTS else row["endpoint"],
+                "is_production": ENDPOINTS[row["endpoint"]].is_production
+                if row["endpoint"] in ENDPOINTS else False,
+                "client_id_tail": _id_tail(row["client_id"]),
+                "client_secret_tail": secret_tail,
+                "created_at": row["created_at"],
+                "last_used_at": row["last_used_at"],
+            },
+            "connected": container.client.is_connected,
+            "authenticated": container.client.is_authenticated,
+        }
+
+    @app.post("/api/v1/accounts", status_code=201)
+    async def create_account(body: dict[str, Any]) -> dict[str, Any]:
+        if not container or not container.account_repo or not container.key_store:
+            raise HTTPException(503, "Account management unavailable")
+        alias = (body.get("alias") or "").strip()
+        endpoint = (body.get("endpoint") or "").strip()
+        client_id = (body.get("client_id") or "").strip()
+        client_secret = body.get("client_secret") or ""
+        if not alias:
+            raise HTTPException(422, "alias is required")
         if not client_id or not client_secret:
-            raise HTTPException(400, "client_id and client_secret required")
-
-        # Check if client_id changed → clear private data
-        data_cleared = False
-        if container and container.key_store:
-            from .config import Environment
-            existing_key = container.key_store.get_key(Environment(env), "main")
-            if existing_key and existing_key.client_id != client_id:
-                deleted = await container.db.clear_private_data(env)
-                data_cleared = True
-                logger.info("Client ID changed for env=%s, cleared %d rows", env, deleted)
-
-        # Set production endpoint if provided
-        if endpoint and env == "production":
-            env_manager.set_production_endpoint(endpoint)
-
-        # Save to KeyStore
-        if container and container.key_store:
-            from .config import Environment
-            container.key_store.add_key(
-                env=Environment(env), name="main",
-                client_id=client_id, client_secret=client_secret,
-                scopes="account:read,trade:read_write",
+            raise HTTPException(422, "client_id and client_secret are required")
+        from .config import ENDPOINTS
+        if endpoint not in ENDPOINTS:
+            raise HTTPException(
+                422, f"endpoint must be one of: {sorted(ENDPOINTS.keys())}"
             )
+        # Alias uniqueness
+        if await container.account_repo.get_by_alias(alias) is not None:
+            raise HTTPException(422, f"alias '{alias}' already exists")
 
-        # Reconnect
-        try:
-            result = await container.reconnect(env, client_id, client_secret)
-            return {**result, "client_id": client_id, "data_cleared": data_cleared}
-        except Exception as e:
-            raise HTTPException(500, f"Reconnect failed: {e}")
+        import uuid
+        new_id = str(uuid.uuid4())
+        secret_blob = container.key_store.encrypt(client_secret)
+        await container.account_repo.create(
+            account_id=new_id,
+            alias=alias,
+            endpoint=endpoint,
+            client_id=client_id,
+            client_secret_encrypted=secret_blob,
+            created_at=int(time.time() * 1000),
+        )
+        return {
+            "id": new_id,
+            "alias": alias,
+            "endpoint": endpoint,
+            "client_id_tail": _id_tail(client_id),
+        }
 
-    @app.post("/api/v1/settings/switch-env")
-    async def switch_env(body: dict):
-        env = body.get("env", "")
-        if env not in ("testnet", "production"):
-            raise HTTPException(400, "env must be 'testnet' or 'production'")
+    @app.put("/api/v1/accounts/{account_id}")
+    async def update_account(account_id: str, body: dict[str, Any]) -> dict[str, Any]:
+        if not container or not container.account_repo or not container.key_store:
+            raise HTTPException(503, "Account management unavailable")
+        existing = await container.account_repo.get(account_id)
+        if not existing:
+            raise HTTPException(404, f"Account {account_id} not found")
 
-        # Try to find credentials for this env
-        if container and container.key_store:
-            from .config import Environment
-            key = container.key_store.get_key(Environment(env), "main")
-            if key:
-                result = await container.reconnect(env, key.client_id, key.client_secret)
-                return result
-            else:
-                raise HTTPException(400, f"No credentials stored for {env}")
-        raise HTTPException(503, "KeyStore not available")
+        new_alias = body.get("alias")
+        new_secret = body.get("client_secret")
+        if new_alias is not None:
+            new_alias = new_alias.strip()
+            if not new_alias:
+                raise HTTPException(422, "alias cannot be empty")
+            if new_alias != existing["alias"]:
+                collision = await container.account_repo.get_by_alias(new_alias)
+                if collision and collision["id"] != account_id:
+                    raise HTTPException(422, f"alias '{new_alias}' already exists")
 
-    @app.post("/api/v1/settings/clear-keys")
-    async def clear_keys(body: dict[str, Any]) -> dict[str, Any]:
-        env_str = body.get("env", env_manager.current_env)
-        if container and container.key_store:
-            from .config import Environment
-            container.key_store.remove_key(Environment(env_str), "main")
-        # Clear private data too
-        deleted = 0
-        if container:
-            deleted = await container.db.clear_private_data(env_str)
-        # Disconnect if current env
-        if env_str == env_manager.current_env and container:
-            await container.client.disconnect()
-        return {"status": "cleared", "env": env_str, "data_rows_deleted": deleted}
+        secret_blob = (
+            container.key_store.encrypt(new_secret) if new_secret else None
+        )
+        await container.account_repo.update(
+            account_id,
+            alias=new_alias,
+            client_secret_encrypted=secret_blob,
+        )
+        return {"status": "updated", "id": account_id}
 
-    @app.post("/api/v1/settings/clear-account-data")
-    async def clear_account_data(body: dict[str, Any]) -> dict[str, Any]:
-        env_str = body.get("env", env_manager.current_env)
+    @app.delete("/api/v1/accounts/{account_id}")
+    async def delete_account(account_id: str) -> dict[str, Any]:
+        if not container or not container.account_repo:
+            raise HTTPException(503, "Account management unavailable")
+        active_id = await container.account_repo.get_active_id()
+        deleting_active = active_id == account_id
+
+        # If deleting the active account, tear down the live connection +
+        # engines first so we don't leave dangling state pointing at a
+        # vanished account. Frontend boot path handles the "no active"
+        # state via the onboarding banner.
+        if deleting_active:
+            await container.deactivate()
+
+        # Drop per-account history before removing the row, so we don't leave
+        # orphans pointing at a vanished account_id.
+        await container.db.clear_private_data(account_id)
+        ok = await container.account_repo.delete(account_id)
+        if not ok:
+            raise HTTPException(404, f"Account {account_id} not found")
+        return {"status": "deleted", "id": account_id, "was_active": deleting_active}
+
+    @app.post("/api/v1/accounts/{account_id}/activate")
+    async def activate_account_endpoint(account_id: str) -> dict[str, Any]:
         if not container:
-            raise HTTPException(503, "Not available")
-        deleted = await container.db.clear_private_data(env_str)
-        return {"status": "cleared", "env": env_str, "rows_deleted": deleted}
+            raise HTTPException(503, "Container unavailable")
+        try:
+            result = await container.activate_account(account_id)
+        except ValueError as e:
+            raise HTTPException(404, str(e))
+        except Exception as e:  # noqa: BLE001
+            logger.exception("activate_account failed")
+            raise HTTPException(500, f"Activate failed: {e}")
+        return result
+
+    @app.post("/api/v1/accounts/test-credentials")
+    async def test_credentials(body: dict[str, Any]) -> dict[str, Any]:
+        endpoint = (body.get("endpoint") or "").strip()
+        client_id = (body.get("client_id") or "").strip()
+        client_secret = body.get("client_secret") or ""
+        from .config import ENDPOINTS
+        if endpoint not in ENDPOINTS:
+            raise HTTPException(422, f"unknown endpoint '{endpoint}'")
+        if not client_id or not client_secret:
+            raise HTTPException(422, "client_id and client_secret are required")
+        return await _probe_credentials(ENDPOINTS[endpoint].ws_url, client_id, client_secret)
+
+    @app.post("/api/v1/accounts/{account_id}/test")
+    async def test_existing_account(account_id: str) -> dict[str, Any]:
+        if not container or not container.account_repo or not container.key_store:
+            raise HTTPException(503, "Account management unavailable")
+        row = await container.account_repo.get(account_id)
+        if not row:
+            raise HTTPException(404, f"Account {account_id} not found")
+        from .config import ENDPOINTS
+        if row["endpoint"] not in ENDPOINTS:
+            raise HTTPException(500, f"Account references unknown endpoint {row['endpoint']}")
+        ws_url = ENDPOINTS[row["endpoint"]].ws_url
+        secret_plain = container.key_store.decrypt(row["client_secret"])
+        return await _probe_credentials(ws_url, row["client_id"], secret_plain)
 
     # ── AI Agent: settings + test + chat ─────────────────────────────────
     @app.get("/api/v1/settings/ai-agent")
@@ -953,21 +1110,43 @@ def create_rest_app(
 
     @app.post("/api/v1/agent/test")
     async def test_ai_agent_connection(body: dict[str, Any]) -> dict[str, Any]:
-        """Minimal 1-token chat completion to verify endpoint+model+key."""
+        """Minimal 1-token chat completion to verify endpoint+model+key.
+
+        If api_key is omitted (or blank) but a key is already saved in the
+        keystore, fall back to it — lets the Settings UI test the saved key
+        without forcing the user to re-type it.
+        """
         from .agent.loop import test_connection as _test
         endpoint = body.get("endpoint", "").strip()
         model = body.get("model", "").strip()
-        api_key = body.get("api_key", "").strip()
+        api_key = (body.get("api_key") or "").strip()
+        if not api_key and container and container.key_store:
+            saved = container.key_store.get_ai_agent_config()
+            if saved:
+                api_key = saved["api_key"]
+                if not endpoint:
+                    endpoint = saved["endpoint"]
+                if not model:
+                    model = saved["model"]
         if not (endpoint and model and api_key):
             raise HTTPException(400, "endpoint, model, and api_key are all required")
         return await _test(endpoint=endpoint, model=model, api_key=api_key)
 
     @app.post("/api/v1/agent/list-models")
     async def list_ai_agent_models(body: dict[str, Any]) -> dict[str, Any]:
-        """Fetch the provider's available model list via OpenAI-compatible /v1/models."""
+        """Fetch the provider's available model list via OpenAI-compatible /v1/models.
+
+        Same saved-key fallback as /agent/test.
+        """
         from .agent.llm_client import list_models as _list
         endpoint = body.get("endpoint", "").strip()
-        api_key = body.get("api_key", "").strip()
+        api_key = (body.get("api_key") or "").strip()
+        if not api_key and container and container.key_store:
+            saved = container.key_store.get_ai_agent_config()
+            if saved:
+                api_key = saved["api_key"]
+                if not endpoint:
+                    endpoint = saved["endpoint"]
         if not (endpoint and api_key):
             raise HTTPException(400, "endpoint and api_key are required")
         return await _list(endpoint=endpoint, api_key=api_key)
@@ -1043,7 +1222,11 @@ def create_rest_app(
                     dispatcher=dispatcher,
                     max_turns=15,
                     audit_repo=audit_repo,
-                    env=str(env_manager.current_env),
+                    account_id=(
+                        await container.account_repo.get_active_id()
+                        if container and container.account_repo
+                        else "unknown"
+                    ) or "unknown",
                     write_enabled=write_enabled,
                 ):
                     yield ev.to_sse()

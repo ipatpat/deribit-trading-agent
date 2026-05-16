@@ -12,6 +12,8 @@ export interface AiAgentConfigPublic {
   endpoint: string | null;
   model: string | null;
   api_key_set: boolean;
+  /** Last 4 chars of the saved API key, so users can identify it. Empty when unset. */
+  api_key_tail?: string;
   env_fallback_available?: boolean;
 }
 

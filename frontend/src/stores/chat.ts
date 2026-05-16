@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
 import { chatStream, confirmTool as _confirmToolRequest, type ChatRequest } from '../api/aiAgent';
+import { useAccountsStore } from './accounts';
 
 export type Role = 'user' | 'assistant' | 'system';
 
@@ -64,6 +65,37 @@ interface ChatState {
 }
 
 const CHAT_STORE_VERSION = 1;
+const LEGACY_CHAT_STORE_KEY = 'chat-store';
+
+function chatStoreKeyForAccount(accountId: string | null): string {
+  // Anonymous (no active account) gets its own bucket so we don't bleed
+  // a "fresh-install" conversation into the first real account on activate.
+  return accountId ? `chat-store:${accountId}` : 'chat-store:_anonymous';
+}
+
+let _currentChatKey = chatStoreKeyForAccount(null);
+
+/**
+ * Rename the v3 single-key persisted chat into the first per-account bucket.
+ * Idempotent: if the legacy key is gone or the new key already has data, no-op.
+ * Call once during app boot, BEFORE the chat store hydrates.
+ */
+export function migrateLegacyChatStore(activeAccountId: string | null): void {
+  try {
+    const legacy = localStorage.getItem(LEGACY_CHAT_STORE_KEY);
+    if (!legacy) return;
+    const targetKey = chatStoreKeyForAccount(activeAccountId);
+    if (localStorage.getItem(targetKey)) {
+      // New bucket already exists — leave both alone so we don't clobber.
+      localStorage.removeItem(LEGACY_CHAT_STORE_KEY);
+      return;
+    }
+    localStorage.setItem(targetKey, legacy);
+    localStorage.removeItem(LEGACY_CHAT_STORE_KEY);
+  } catch {
+    // localStorage unavailable → fall through to fresh state.
+  }
+}
 
 // Module-level abort controller (one stream at a time)
 let _activeController: AbortController | null = null;
@@ -333,7 +365,7 @@ export const useChatStore = create<ChatState>()(
       },
     }),
     {
-      name: 'chat-store',
+      name: _currentChatKey,
       version: CHAT_STORE_VERSION,
       storage: createJSONStorage(() => localStorage),
       partialize: (state) => ({
@@ -354,3 +386,43 @@ export const useChatStore = create<ChatState>()(
     },
   ),
 );
+
+/**
+ * Swap the persist bucket to the given account's chat history, reset
+ * writeEnabled back to false (re-arming the read-only gate), and rehydrate.
+ * Idempotent when the target key already matches the current one.
+ */
+async function switchChatPersistKey(accountId: string | null): Promise<void> {
+  const newKey = chatStoreKeyForAccount(accountId);
+  if (newKey === _currentChatKey) return;
+  _currentChatKey = newKey;
+
+  // Flush the current bucket's in-memory state before switching, otherwise
+  // the next rehydrate may write back over what was just there.
+  useChatStore.persist.setOptions({ name: newKey });
+  // Clear in-memory state so the rehydrate() result is what users see, not
+  // a merged snapshot. writeEnabled forcibly resets to false on every switch.
+  useChatStore.setState({
+    messages: [],
+    writeEnabled: false,
+    error: null,
+    loading: false,
+  });
+  await useChatStore.persist.rehydrate();
+  // Always force writeEnabled false after rehydrate — even if the new
+  // account had it persisted true, the user must re-arm intentionally.
+  useChatStore.setState({ writeEnabled: false });
+}
+
+// Subscribe to activeId changes from the accounts store and react.
+// The subscribe call here runs at module-load time — same time chat-store
+// is created, before any boot-time fetchAccounts has run. Initial sync
+// happens via the App boot path which calls switchChatPersistKey explicitly
+// after fetchAccounts resolves.
+useAccountsStore.subscribe((state, prev) => {
+  if (state.activeId !== prev.activeId) {
+    void switchChatPersistKey(state.activeId);
+  }
+});
+
+export { switchChatPersistKey };

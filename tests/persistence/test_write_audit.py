@@ -47,7 +47,7 @@ async def test_record_inserts_and_fills_created_at(db):
         "args_json": '{"instrument_name":"BTC-PERPETUAL"}',
         "summary": "Place BTC perp",
         "decision": "confirmed",
-        "env": "testnet",
+        "account_id": "testnet",
     })
     rows = await repo.recent(limit=10)
     assert len(rows) == 1
@@ -55,7 +55,7 @@ async def test_record_inserts_and_fills_created_at(db):
     assert r["tool_call_id"] == "tc_test_1"
     assert r["tool_name"] == "place_order"
     assert r["decision"] == "confirmed"
-    assert r["env"] == "testnet"
+    assert r["account_id"] == "testnet"
     assert isinstance(r["created_at"], int) and r["created_at"] > 0
 
 
@@ -69,7 +69,7 @@ async def test_record_all_three_decisions(db):
             "args_json": "{}",
             "summary": f"x {i}",
             "decision": decision,
-            "env": "production",
+            "account_id": "production",
         })
     rows = await repo.recent(limit=10)
     assert len(rows) == 3
@@ -89,5 +89,5 @@ async def test_decision_check_constraint(db):
             "args_json": "{}",
             "summary": "x",
             "decision": "maybe",  # invalid
-            "env": "testnet",
+            "account_id": "testnet",
         })

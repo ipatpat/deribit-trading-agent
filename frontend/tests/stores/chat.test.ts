@@ -114,7 +114,7 @@ describe('useChatStore', () => {
       draft: 'unsaved',
       tools: [{ name: 'foo' }],
     });
-    const raw = localStorage.getItem('chat-store');
+    const raw = localStorage.getItem('chat-store:_anonymous');
     expect(raw).toBeTruthy();
     const parsed = JSON.parse(raw!);
     expect(parsed.state.open).toBe(true);
@@ -125,14 +125,14 @@ describe('useChatStore', () => {
 
   it('persist version is set to 1', () => {
     useChatStore.setState({ open: true });
-    const raw = localStorage.getItem('chat-store');
+    const raw = localStorage.getItem('chat-store:_anonymous');
     const parsed = JSON.parse(raw!);
     expect(parsed.version).toBe(1);
   });
 
   it('persist excludes loading and error', () => {
     useChatStore.setState({ open: true, loading: true, error: 'oops' });
-    const raw = localStorage.getItem('chat-store');
+    const raw = localStorage.getItem('chat-store:_anonymous');
     const parsed = JSON.parse(raw!);
     expect(parsed.state.loading).toBeUndefined();
     expect(parsed.state.error).toBeUndefined();
@@ -148,7 +148,7 @@ describe('useChatStore', () => {
 
   it('writeEnabled is persisted (in partialize)', () => {
     useChatStore.setState({ writeEnabled: true });
-    const raw = localStorage.getItem('chat-store');
+    const raw = localStorage.getItem('chat-store:_anonymous');
     const parsed = JSON.parse(raw!);
     expect(parsed.state.writeEnabled).toBe(true);
   });

@@ -232,7 +232,9 @@ class KeyStore:
     def get_ai_agent_public(self) -> dict[str, str | bool | None]:
         """Return non-secret AI agent config for frontend display.
 
-        Returns: {endpoint: str | None, model: str | None, api_key_set: bool}
+        Returns: {endpoint, model, api_key_set, api_key_tail}. The tail (last 4
+        chars of the key) lets the user identify *which* saved key is in use
+        without exposing the secret.
         """
         with sqlite3.connect(self._db_path) as conn:
             rows = conn.execute(
@@ -242,10 +244,12 @@ class KeyStore:
         cfg: dict[str, str] = {}
         for row in rows:
             cfg[row[0]] = self._fernet.decrypt(row[1]).decode()
+        api_key = cfg.get("api_key", "")
         return {
             "endpoint": cfg.get("endpoint"),
             "model": cfg.get("model"),
             "api_key_set": "api_key" in cfg,
+            "api_key_tail": api_key[-4:] if len(api_key) >= 4 else api_key,
         }
 
     def clear_ai_agent_config(self) -> None:
@@ -256,3 +260,39 @@ class KeyStore:
                 (self._AI_AGENT_NS,),
             )
         logger.info("AI agent config cleared")
+
+    # ── Fernet access (used by AccountRepo to encrypt/decrypt secrets) ───────
+
+    def encrypt(self, plaintext: str) -> bytes:
+        """Encrypt a string with the keystore's Fernet. Returns BLOB ready
+        for storage (e.g. accounts.client_secret column)."""
+        return self._fernet.encrypt(plaintext.encode())
+
+    def decrypt(self, ciphertext: bytes) -> str:
+        """Decrypt a Fernet BLOB to plaintext."""
+        return self._fernet.decrypt(ciphertext).decode()
+
+    # ── Legacy api_keys export (for v3 → v4 account migration) ───────────────
+
+    def export_legacy_api_keys(self) -> list[ApiKeyFull]:
+        """Return all api_keys rows with decrypted secrets. Used at bootstrap
+        to migrate the legacy single-env keystore to the multi-account model.
+        Empty list if api_keys table is empty or doesn't exist."""
+        try:
+            with sqlite3.connect(self._db_path) as conn:
+                rows = conn.execute(
+                    """SELECT name, env, client_id, client_secret_encrypted, scopes
+                       FROM api_keys"""
+                ).fetchall()
+        except sqlite3.OperationalError:
+            return []
+        return [
+            ApiKeyFull(
+                name=r[0],
+                env=r[1],
+                client_id=r[2],
+                client_secret=self._fernet.decrypt(r[3]).decode(),
+                scopes=r[4],
+            )
+            for r in rows
+        ]
