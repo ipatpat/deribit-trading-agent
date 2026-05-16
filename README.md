@@ -2,29 +2,21 @@
 
 [English](./README.md) · [中文](./README_CN.md)
 
-A personal **derivatives trading terminal** for Deribit with a built-in **AI assistant** that streams answers about live markets, your portfolio, and option strategies.
+A personal **derivatives trading terminal** for Deribit, with a built-in **AI copilot named Vida** that streams answers about live markets, your portfolio, and option strategies — and, when you let her, places orders for you behind a one-click confirmation card.
 
 ![Dashboard with AI assistant](assets/screenshots/dashboard.png)
 
 ---
 
-## Who is this for?
+## What you get
 
-| You are… | What you'll get |
-| --- | --- |
-| **A discretionary derivatives trader** | A clean Deribit UI with live perp/options/futures data, smart-order execution algos (tick-chaser, intent router), portfolio + risk dashboards, and an LLM you can ask "show me the BTC option market" instead of clicking through tabs. |
-| **An AI engineer / agent designer** | A worked example of *progressive disclosure* in MCP tool design: 12 atomic data tools + 1 compute tool, type-adaptive returns, slim system prompt (~800 tokens), and SSE streaming protocol that the frontend renders incrementally. Browse `src/deribit_trading/agent/` and `src/deribit_trading/mcp_server.py` for the full implementation. |
-| **A derivatives beginner** | A safe playground to read live Greeks / IV / funding rates, simulate multi-leg payoffs (straddles, condors, covered calls) with the `analyze_option_combo` tool, and ask the AI to explain instruments and strategies in plain language. |
+A clean, single-screen trading workstation for BTC and ETH perps, futures, and the full options chain on Deribit — with a streaming AI assistant docked on the right that can actually *do* things, not just chat.
 
----
-
-## What it does
-
-### Trading terminal (frontend)
-- **Live multi-instrument dashboard**: BTC + ETH perps, futures, full option chain with Greeks, IV surface, equity curve.
-- **Smart orders**: tick-chaser and intent-router algorithms with maker-preferred execution and patience controls.
-- **Portfolio + risk views**: positions, P&L attribution, daily-loss limits, margin ratios.
-- **Settings**: per-environment credential store (Fernet-encrypted), production / testnet switch, auto-refresh tuning.
+- **Live multi-instrument dashboard** — perps, futures, full option chain with Greeks, IV surface, equity curve.
+- **Smart orders** — tick-chaser and intent-router execution algos with maker-preferred fills and adjustable patience.
+- **Portfolio + risk** — positions, P&L attribution, daily-loss limits, margin ratios.
+- **Multi-account** — manage several Deribit accounts from one install. The top-right chip switches the active account; each account keeps its own portfolio, chat history, AI-trading toggle, and audit trail. Credentials are Fernet-encrypted locally and never leave your machine.
+- **Vida, your AI trading copilot** — streaming chat with 13 atomic market/account tools, 4 gated trading tools, and per-call confirmation cards for every write action.
 
 **Option chain — IV smile + term structure side by side:**
 
@@ -34,68 +26,106 @@ A personal **derivatives trading terminal** for Deribit with a built-in **AI ass
 
 ![Futures page](assets/screenshots/futures.png)
 
-### AI assistant (right-side chat)
-- **OpenAI-compatible LLM**: defaults to DeepSeek; works with Zhipu GLM, OpenAI, vLLM, ollama, anything OpenAI-API-compatible.
-- **13 atomic MCP tools**:
-  - Discovery — `list_instruments`, `list_expiries`
-  - Single-instrument — `get_quote` (type-adaptive: perp / option / future), `get_orderbook`, `get_candles`
-  - Batch — `get_market_snapshot` (one ~200ms RTT for the entire option chain)
-  - Account — `get_positions`, `get_balance`, `get_pnl_breakdown`, `get_risk_status`
-  - System — `get_system_status`
-  - Compute — `analyze_option_combo` (multi-leg payoff curve + aggregate Greeks)
-- **SSE streaming**: text deltas, tool-use lifecycle events, tool results, terminal/error events — frontend renders each chunk live.
+---
+
+## What Vida can do for you
+
+Vida is an OpenAI-compatible LLM (defaults to DeepSeek; works with Zhipu GLM, OpenAI, vLLM, ollama, anything OpenAI-API-compatible) running a streaming ReAct loop over a hand-curated tool set.
+
+**Ask her about the market or your account** — always read-only, always anchored on live tool data:
+
+- *"What's the BTC perp price?"* → single-instrument quote with funding + 24h change.
+- *"Show me the ETH option market."* → one batch call returns the entire chain with IVs / volumes / OI.
+- *"What's nearest expiry, and what does the IV smile look like?"* → expiry list + per-strike IVs.
+- *"Build me a 70k–80k BTC call spread for 27JUN26 — payoff and Greeks."* → multi-leg payoff curve + aggregate Greeks via `analyze_option_combo`.
+- *"What's driving today's P&L? Am I near my daily loss limit?"* → positions, P&L breakdown, risk status.
+
+**Let her trade for you (opt-in)** — every write call pops a confirmation card:
+
+1. In Settings, flip **AI Trading** on for the active account. The chat header lock-icon turns into an unlock.
+2. Ask Vida something like *"Place a limit buy for 10 BTC-PERPETUAL at $58,000."*
+3. Vida echoes the parameters and calls `place_order`. The agent loop pauses and the UI renders a **ConfirmationCard** with a clean order ticket and a 30-second countdown.
+4. Click **Confirm** → the order submits. Click **Cancel** (or let it time out) → the tool returns an error to Vida and she adjusts her plan.
+
+Vida has access to:
+- `place_order`, `cancel_order`, `smart_order`, `cancel_smart_order` — all gated by the confirmation card.
+- Every successful or declined write call is recorded in a local audit log.
+
+She will **refuse to predict price direction** or give direct buy/sell calls — she presents trade-offs, payoffs, Greeks, and what would invalidate an idea.
 
 ---
 
-## Stack
+## Get started
+
+### 1. Get a Deribit account
+
+If you don't have one yet, sign up using my referral link:
+
+👉 **[https://www.deribit.com/?reg=20899.657](https://www.deribit.com/?reg=20899.657)**
+
+Then create an API key:
+
+1. Log in → **Account → API**.
+2. Click **Add new key**, give it a label (e.g. `vida-local`), and enable the scopes you want: `trade:read_write`, `account:read`, `wallet:read`.
+3. Copy the **Client ID** and **Client Secret** — you'll paste them into the app in step 4.
+4. **Start on testnet first.** Same registration link, but log in at [test.deribit.com](https://test.deribit.com/) and generate a separate testnet key. The app defaults to testnet and requires an explicit toggle in Settings to switch to production.
+
+### 2. Run the backend
+
+```bash
+git clone https://github.com/ipatpat/deribit-trading.git
+cd deribit-trading
+uv sync
+export DEEPSEEK_API_KEY=sk-...      # or OPENAI_API_KEY / ZHIPU_API_KEY, etc.
+uv run python -m deribit_trading api --env testnet --host 127.0.0.1 --port 8000
+```
+
+### 3. Run the frontend
+
+```bash
+cd frontend
+npm install
+npm run dev                          # http://localhost:5173
+```
+
+### 4. Add your Deribit account
+
+1. Open `http://localhost:5173`. The app will prompt you to add an account on first launch.
+2. **Settings → Account Configuration → Add Account**: paste the Client ID + Client Secret from step 1, pick `testnet`, save.
+3. The top-right chip will switch to the new account once it connects.
+
+### 5. Talk to Vida
+
+1. Click the floating chat button (bottom-right) to open the sidebar.
+2. Try one of the suggested prompts, or ask *"What's the BTC perp price?"*.
+3. To enable trading: **Settings → AI Trading → On** for this account, then ask her to place a small testnet order. Confirm the card to actually submit.
+
+---
+
+## Tech stack
 
 | Layer | Tech |
 | --- | --- |
 | Trading core | Python 3.12, `asyncio`, `pydantic`, `websockets`, Deribit JSON-RPC v2 |
-| Persistence | SQLite (`aiosqlite`), bucketed equity snapshots, candle cache |
+| Persistence | SQLite (`aiosqlite`), bucketed equity snapshots, candle cache, write-call audit log |
 | REST API | FastAPI + SSE streaming |
-| MCP | Python `mcp` SDK |
+| MCP | Python `mcp` SDK (13 atomic data tools + 4 gated write tools) |
 | LLM client | `openai` SDK (any OpenAI-compatible endpoint) |
 | Frontend | React 18, TypeScript, Vite, Tailwind, Zustand, Radix UI, ECharts |
 | Testing | `pytest`, `vitest` |
 
 ---
 
-## Quick start
+## Design notes (for the curious)
 
-```bash
-# 1.endpoint works
-uv run python -m deribit_trading api --env testnet --host 127.0.0.1 --port 8000
-
-# 2. Frontend
-cd frontend
-npm install
-npm run dev                          # http://localhost:5173
-
-# 3. Configure Deribit credentials in Settings → Account Configuration
-# 4. Open the chat sidebar (FAB, bottom-right) → ask "What's the BTC perp price?"
-```
-
-Deribit testnet is recommended for first run. The production switch requires explicit confirmation in Settings.
-
----
-
-## Project philosophy
-
-A few opinions baked into the design — worth knowing if you're reading the code:
+A few opinions baked into the design:
 
 - **Atomic data plane, not API wrappers.** Each MCP tool is a *minimal data unit*. Complex analysis (IV skew, term structure, payoff sweeps) belongs in a future Skill layer that *composes* these tools — keeping the agent surface thin and the LLM in charge of reasoning over raw arrays.
-- **Just-in-time disclosure.** Tier 1 knowledge (~800 tokens) only covers what the agent *must know to use the tools*. Specifics like current fee schedules or smart-order internals are fetched on demand via `get_system_status`, not preloaded into every prompt.
-- **No "interpretation" fields in MCP responses.** Tools return numbers; the LLM (or a future Skill module) decides what they mean. No `"shape": "contango"` magic strings.
-- **No hidden caching.** All tool calls hit Deribit live. The batch endpoint (`public/get_book_summary_by_currency`) is ~200ms — caching's complexity isn't worth it.
-- **Refuse price direction predictions and direct buy/sell calls.** The agent presents tradeoffs, payoffs, and risks — not "BTC will go up."
-
----
-
-## Status
-
-- **Today**: full trading UI (place order, cancel, smart orders) plus an AI assistant focused on market analysis, portfolio queries, and multi-leg strategy modeling.
-- **Coming next**: trading tools for the agent (`place_order`, `cancel_order`, `smart_order`) gated by a confirmation-card flow, a Skill layer for heavier analytics (IV skew, term structure, IV-RV), and a Tier 2 strategy playbook.
+- **Just-in-time disclosure.** Tier 1 knowledge (~800 tokens) only covers what the agent *must know to use the tools*. Fee schedules, smart-order internals, etc. are fetched on demand via `get_system_status`, not preloaded into every prompt.
+- **No "interpretation" fields in MCP responses.** Tools return numbers; the LLM decides what they mean. No `"shape": "contango"` magic strings.
+- **No hidden caching.** All tool calls hit Deribit live. The batch endpoint is ~200ms — caching complexity isn't worth it.
+- **Confirmation cards over autonomous trading.** Vida can call write tools, but every single call is intercepted by a 30-second per-call confirmation card. No bulk approval, no "remember this", no autopilot.
+- **Refuse price predictions and direct buy/sell calls.** Trade-offs, payoffs, risks — not "BTC will go up."
 
 ---
 
