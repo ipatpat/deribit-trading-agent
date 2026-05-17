@@ -170,7 +170,7 @@ class PortfolioService:
                 "total_pnl": p.total_profit_loss,
             }
             for p in positions
-            if p.size > 0
+            if p.size != 0
         ]
         attribution.sort(key=lambda x: abs(x["total_pnl"]), reverse=True)
         return attribution

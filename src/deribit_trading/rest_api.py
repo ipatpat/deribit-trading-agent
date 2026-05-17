@@ -555,7 +555,7 @@ def create_rest_app(
     @app.get("/api/v1/positions")
     async def get_positions(currency: str = Query("BTC")) -> list[dict[str, Any]]:
         positions = await trading.get_positions(currency)
-        return [p.model_dump() for p in positions if p.size > 0]
+        return [p.model_dump() for p in positions if p.size != 0]
 
     # ── Portfolio overview (multi-currency) ──────────────────────────
 
@@ -578,10 +578,10 @@ def create_rest_app(
         eth_equity = eth_raw.get("equity", 0)
         total_usd = btc_equity * btc_price + eth_equity * eth_price
 
-        # Enrich positions with leverage; skip closed / net-zero positions
+        # Skip closed / net-zero positions; short positions have negative size
         all_positions = (
-            [p.model_dump() for p in btc_pos if p.size > 0]
-            + [p.model_dump() for p in eth_pos if p.size > 0]
+            [p.model_dump() for p in btc_pos if p.size != 0]
+            + [p.model_dump() for p in eth_pos if p.size != 0]
         )
 
         return {

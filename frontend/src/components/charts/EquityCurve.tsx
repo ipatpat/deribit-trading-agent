@@ -193,11 +193,6 @@ function EquityCurve({ btcPrice = 0, ethPrice = 0 }: EquityCurveProps) {
       ) : (
         <div className="relative">
           <ReactECharts option={option} style={{ height: 200 }} notMerge />
-          {isFlat && (
-            <span className="absolute top-2 right-3 text-[10px] text-secondary font-mono bg-cream/90 rounded px-1.5 py-0.5 border border-divider">
-              &asymp; flat
-            </span>
-          )}
         </div>
       )}
     </div>

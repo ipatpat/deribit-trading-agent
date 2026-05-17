@@ -4,7 +4,7 @@ import AccountChip from '../topbar/AccountChip';
 
 function Topbar() {
   return (
-    <header className="fixed top-0 left-0 right-0 h-topbar bg-white border-b border-divider flex items-center justify-between px-6 z-40">
+    <header className="fixed top-0 left-0 right-0 h-topbar bg-white border-b border-divider flex items-center justify-between px-6 z-30">
       <span className="text-lg font-semibold text-primary tracking-tight">
         Deribit Trading
       </span>

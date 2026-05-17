@@ -28,7 +28,7 @@ function Sidebar() {
   const { pathname } = useLocation();
 
   return (
-    <aside className="fixed left-0 top-0 bottom-0 w-sidebar bg-white border-r border-divider flex flex-col items-center pt-topbar z-30">
+    <aside className="fixed left-0 top-0 bottom-0 w-sidebar bg-white border-r border-divider flex flex-col items-center pt-topbar z-10">
       {NAV_ITEMS.map(({ path, icon: Icon, label }, idx) => {
         const active = path === '/' ? pathname === '/' : pathname.startsWith(path);
         const isLast = idx === NAV_ITEMS.length - 1;

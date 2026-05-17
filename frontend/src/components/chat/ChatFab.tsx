@@ -12,7 +12,7 @@ function ChatFab() {
       type="button"
       onClick={toggle}
       aria-label="Open AI assistant"
-      className="fixed bottom-fab-bottom right-fab-right z-30 w-chat-fab h-chat-fab rounded-full bg-primary text-white shadow-popup flex items-center justify-center transition-transform hover:shadow-card active:scale-95"
+      className="fixed bottom-fab-bottom right-fab-right z-10 w-chat-fab h-chat-fab rounded-full bg-primary text-white shadow-popup flex items-center justify-center transition-transform hover:shadow-card active:scale-95"
     >
       <Sparkles size={20} strokeWidth={2.25} />
     </button>

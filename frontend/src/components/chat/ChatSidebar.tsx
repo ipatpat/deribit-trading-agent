@@ -215,7 +215,7 @@ function ChatSidebar() {
 
   return (
     <aside
-      className="fixed right-0 w-chat-sidebar bg-white border-l border-divider flex flex-col z-40"
+      className="fixed right-0 w-chat-sidebar bg-white border-l border-divider flex flex-col z-20"
       style={{
         top: 'var(--topbar-height)',
         bottom: smartBarVisible ? 'var(--smartbar-height)' : 0,

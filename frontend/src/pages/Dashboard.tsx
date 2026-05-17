@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import Card from '../components/common/Card';
 import Skeleton from '../components/common/Skeleton';
 import EquityCurve from '../components/charts/EquityCurve';
@@ -7,6 +7,7 @@ import { formatPrice, formatUsd, formatCompactUsd, formatNativeBalance } from '.
 import { usePolling } from '../utils/usePolling';
 import { useRefreshInterval } from '../stores/settings';
 import { useToastStore } from '../stores/toast';
+import { useAccountsStore } from '../stores/accounts';
 
 function Dashboard() {
   const [data, setData] = useState<PortfolioOverview | null>(null);
@@ -37,6 +38,9 @@ function Dashboard() {
   };
 
   usePolling(fetchData, refreshMs);
+
+  const activeId = useAccountsStore((s) => s.activeId);
+  useEffect(() => { fetchData(); }, [activeId]);
 
   const btc = data?.accounts?.BTC;
   const eth = data?.accounts?.ETH;

@@ -64,7 +64,7 @@ function AccountChip() {
       </button>
 
       {open && (
-        <div className="absolute right-0 top-full mt-1 w-64 bg-white border border-divider rounded-card shadow-card z-50 overflow-hidden">
+        <div className="absolute right-0 top-full mt-1 w-64 bg-white border border-divider rounded-card shadow-card z-40 overflow-hidden">
           {/* Active section */}
           <div className="px-3 py-2 bg-cream border-b border-divider">
             <div className="text-overline text-secondary uppercase tracking-wider font-semibold mb-0.5">
