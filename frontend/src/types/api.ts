@@ -85,7 +85,6 @@ export interface SmartOrder {
   direction: 'buy' | 'sell';
   amount: number;
   intent: SmartOrderIntent | null;
-  algorithm: string;
   state: SmartOrderState;
   deribit_order_id: string | null;
   current_price: number | null;

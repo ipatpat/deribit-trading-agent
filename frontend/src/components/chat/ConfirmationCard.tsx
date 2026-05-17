@@ -53,14 +53,35 @@ function _formatFields(toolName: string, args: any): Field[] {
         { label: 'Instrument', value: String(args.instrument_name ?? '?') },
         { label: 'Side', value: dir, emphasize: true },
         { label: 'Amount', value: String(args.amount ?? '?'), emphasize: true },
-        { label: 'Algorithm', value: String(args.algorithm ?? 'tick-chaser') },
+        { label: 'Intent', value: _capitalize(args.intent ?? 'standard') },
       ];
-      if (args.intent) fields.push({ label: 'Intent', value: _capitalize(args.intent) });
-      if (args.price_limit !== undefined && args.price_limit !== null) {
-        fields.push({ label: 'Price limit', value: `$${Number(args.price_limit).toLocaleString()}` });
+      const overrides = (args.overrides ?? {}) as Record<string, unknown>;
+      if (typeof overrides.t_patience_ms === 'number') {
+        fields.push({ label: 'Patience', value: `${overrides.t_patience_ms} ms` });
       }
-      if (typeof args.prefer_maker === 'boolean') {
-        fields.push({ label: 'Prefer maker', value: args.prefer_maker ? 'Yes' : 'No' });
+      if (typeof overrides.max_cross_levels === 'number') {
+        fields.push({ label: 'Max cross levels', value: String(overrides.max_cross_levels) });
+      }
+      if (typeof overrides.price_limit_pct === 'number') {
+        fields.push({
+          label: 'Price limit',
+          value: `±${(overrides.price_limit_pct * 100).toFixed(2)}%`,
+        });
+      }
+      if (typeof overrides.price_limit_ticks === 'number') {
+        fields.push({
+          label: 'Price limit',
+          value: `±${overrides.price_limit_ticks} ticks`,
+        });
+      }
+      if (typeof overrides.price_limit_iv === 'number') {
+        fields.push({
+          label: 'Price limit',
+          value: `±${(overrides.price_limit_iv * 100).toFixed(1)} vol pts`,
+        });
+      }
+      if (typeof overrides.prefer_maker === 'boolean') {
+        fields.push({ label: 'Prefer maker', value: overrides.prefer_maker ? 'Yes' : 'No' });
       }
       return fields;
     }

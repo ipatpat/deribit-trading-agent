@@ -13,7 +13,7 @@ A personal **derivatives trading terminal** for Deribit, with a built-in **AI co
 A clean, single-screen trading workstation for BTC and ETH perps, futures, and the full options chain on Deribit — with a streaming AI assistant docked on the right that can actually *do* things, not just chat.
 
 - **Live multi-instrument dashboard** — perps, futures, full option chain with Greeks, IV surface, equity curve.
-- **Smart orders** — tick-chaser and intent-router execution algos with maker-preferred fills and adjustable patience.
+- **Smart orders** — intent-driven execution (`standard` patient maker-first → escalating Lv0–Lv4 ladder; `urgent` immediate IOC sweep) with maker-preferred fills and tunable patience budget.
 - **Portfolio + risk** — positions, P&L attribution, daily-loss limits, margin ratios.
 - **Multi-account** — manage several Deribit accounts from one install. The top-right chip switches the active account; each account keeps its own portfolio, chat history, AI-trading toggle, and audit trail. Credentials are Fernet-encrypted locally and never leave your machine.
 - **Vida, your AI trading copilot** — streaming chat with 13 atomic market/account tools, 4 gated trading tools, and per-call confirmation cards for every write action.
