@@ -1,7 +1,7 @@
 """SmartOrderEngine: manages multiple SmartOrders with event-driven updates.
 
-Intent path (Standard / Urgent) is the primary route. Legacy `algorithm` field
-remains supported via the algorithm registry (tick-chaser, timed-escalation).
+Intent-only routing: every SmartOrder is dispatched to `StandardIntent` or
+`UrgentIntent` via `config.intent`. There is no legacy algorithm path.
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ from typing import Any, Callable, Coroutine
 from ..algorithms import PlacementAlgorithm, get_algorithm
 from ..client import DeribitClient
 from ..client.errors import DeribitAPIError
-from .fee_logic import build_fee_context, should_use_post_only
+from .fee_logic import build_fee_context
 from .snapshot_builder import SnapshotBuilder
 from .throttle import AmendThrottle
 from .types import (
@@ -53,19 +53,23 @@ class SmartOrder:
     arrival_mid: float = 0.0
     current_level: int = 0  # 0-4: Lv0..Lv4 (Lv0=own-top, Lv4=market)
     post_only_reject_count: int = 0
+    # Populated when state transitions to FAILED. Surfaces the underlying
+    # exchange error (incl. DeribitAPIError.data.reason / .param) so the
+    # caller — REST client, MCP agent, UI — can self-correct without
+    # consulting the server log.
+    last_error: str | None = None
 
     @property
     def elapsed_ms(self) -> int:
         return int((time.time() - self.created_at) * 1000)
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        d: dict[str, Any] = {
             "id": self.id,
             "instrument": self.config.instrument_name,
             "direction": self.config.direction,
             "amount": self.config.amount,
-            "intent": getattr(self.config, "intent", None),
-            "algorithm": getattr(self.config, "algorithm", None) or self.algorithm.name,
+            "intent": self.config.intent,
             "state": self.state,
             "deribit_order_id": self.deribit_order_id,
             "current_price": self.current_price,
@@ -74,9 +78,12 @@ class SmartOrder:
             "amend_count": self.amend_count,
             "post_only_reject_count": self.post_only_reject_count,
             "elapsed_ms": self.elapsed_ms,
-            "t_patience_ms": getattr(self.config, "t_patience_ms", None),
+            "t_patience_ms": self.config.t_patience_ms,
             "fee_mode": "maker" if self.fee_context.is_post_only else "any",
         }
+        if self.last_error is not None:
+            d["last_error"] = self.last_error
+        return d
 
 
 class SmartOrderEngine:
@@ -125,15 +132,13 @@ class SmartOrderEngine:
     async def create_smart_order(self, config: SmartOrderConfig) -> SmartOrder:
         """Create and start a new SmartOrder.
 
-        Routing:
-          - If config.algorithm is set (legacy): use that registered algorithm.
-          - Otherwise: route by config.intent ("standard" → intent:standard,
-            "urgent" → intent:urgent).
+        Routes by `config.intent`: "standard" → intent:standard,
+        "urgent" → intent:urgent.
         """
         if self._risk_manager:
             self._risk_manager.check(
                 config.instrument_name, config.direction,
-                config.amount, config.price_limit,
+                config.amount, None,
             )
 
         so_id = f"so-{uuid.uuid4().hex[:8]}"
@@ -146,13 +151,10 @@ class SmartOrderEngine:
                 instrument_type=fee_ctx.instrument_type,
             )
 
-        # Resolve algorithm
+        # Resolve algorithm by intent
         algo_name, algo_params = self._resolve_algorithm(config)
         algo = get_algorithm(algo_name, algo_params)
-        # Inject config into intent algorithms
-        attach = getattr(algo, "attach_config", None)
-        if callable(attach):
-            attach(config)
+        algo.attach_config(config)
 
         # Tick size
         tick_size = await self._fetch_tick_size(config.instrument_name)
@@ -181,50 +183,40 @@ class SmartOrderEngine:
         )
         self._orders[so_id] = so
 
-        # Build initial snapshot
+        # Build initial snapshot and decide initial action by intent
         snapshot = self._build_snapshot(so)
-        # Decide initial action based on intent
-        is_intent = algo_name.startswith("intent:")
         initial_price = algo.initial_price(snapshot)
 
-        if is_intent and getattr(algo, "intent", "") == "urgent":
+        if config.intent == "urgent":
             # Urgent: fire IOC immediately. _place_ioc + _convert_to_market manage level.
             await self._place_ioc(so, price=initial_price, amount=config.amount)
             return so
 
-        # Standard or legacy: place limit at Lv0 with post_only
-        post_only = self._post_only_for_initial(so, is_intent)
+        # Standard: place limit at Lv0 with post_only (unless escape hatch)
         try:
             await self._place_limit(
                 so, price=self._snap_to_tick(initial_price, tick_size),
-                post_only=post_only,
+                post_only=so.config.prefer_maker,
             )
             so.current_level = 0
         except DeribitAPIError as e:
-            if e.code == 10041 and is_intent:
+            if e.code == 10041:
                 # post_only reject → use algo recovery
                 await self._handle_post_only_reject(so)
             else:
                 so.state = SmartOrderState.FAILED
+                so.last_error = str(e)
                 logger.error("SmartOrder %s failed: %s", so_id, e)
                 self._emit("failed", so)
 
         return so
 
     def _resolve_algorithm(self, config: SmartOrderConfig) -> tuple[str, dict]:
-        if config.algorithm:
-            return config.algorithm, dict(config.algo_params)
-        # Intent path
         params = {
             "t_patience_ms": config.t_patience_ms,
             "max_cross_levels": config.max_cross_levels,
         }
         return f"intent:{config.intent}", params
-
-    def _post_only_for_initial(self, so: SmartOrder, is_intent: bool) -> bool:
-        if is_intent:
-            return so.config.prefer_maker  # Lv0 starts post_only=true unless escape hatch
-        return should_use_post_only(so.fee_context)
 
     # ── Snapshot construction ───────────────────────────────────────
 
@@ -241,9 +233,9 @@ class SmartOrderEngine:
             direction=so.config.direction,
             target_amount=so.config.amount,
             elapsed_ms=so.elapsed_ms,
-            timeout_ms=so.config.timeout_ms,
+            timeout_ms=None,
             amend_count=so.amend_count,
-            price_limit=so.config.price_limit,
+            price_limit=None,
             tick_size=so.tick_size,
             fee_context=so.fee_context,
             arrival_mid=so.arrival_mid,
@@ -343,6 +335,7 @@ class SmartOrderEngine:
                 await self._handle_post_only_reject(so)
             else:
                 so.state = SmartOrderState.FAILED
+                so.last_error = str(e)
                 logger.error("SmartOrder %s place failed: %s", so.id, e)
                 self._emit("failed", so)
 
@@ -375,6 +368,7 @@ class SmartOrderEngine:
         except DeribitAPIError as e:
             logger.error("SmartOrder %s IOC failed: %s", so.id, e)
             so.state = SmartOrderState.FAILED
+            so.last_error = str(e)
             self._emit("failed", so)
 
     async def _handle_post_only_reject(self, so: SmartOrder) -> None:
@@ -391,6 +385,7 @@ class SmartOrderEngine:
         on_reject = getattr(algo, "on_post_only_reject", None)
         if not callable(on_reject):
             so.state = SmartOrderState.FAILED
+            so.last_error = "algorithm does not implement on_post_only_reject"
             self._emit("failed", so)
             return
         snapshot = self._build_snapshot(so)
@@ -457,6 +452,7 @@ class SmartOrderEngine:
             except Exception as e:
                 logger.error("SmartOrder %s market conversion failed: %s", so.id, e)
                 so.state = SmartOrderState.FAILED
+                so.last_error = f"market conversion failed: {e}"
         else:
             so.state = SmartOrderState.COMPLETED
         self._emit("finished", so)
@@ -630,7 +626,7 @@ class SmartOrderEngine:
             so.id,
             so.config.instrument_name,
             so.config.direction,
-            getattr(so.config, "intent", None) or so.algorithm.name,
+            so.config.intent,
             so.state.value if hasattr(so.state, "value") else so.state,
             so.current_level,
             so.elapsed_ms,

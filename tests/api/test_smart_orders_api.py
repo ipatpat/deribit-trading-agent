@@ -1,16 +1,15 @@
 """Tests for the SmartOrders REST request → SmartOrderConfig translation.
 
 We exercise `_build_smart_order_config` directly rather than spinning up the
-full FastAPI app — the goal is to cover intent path, legacy fallbacks, and
-overrides validation.
+full FastAPI app — the goal is to cover the intent path, overrides validation,
+and rejection of legacy fields.
 """
 
 from __future__ import annotations
 
-import warnings
-
 import pytest
 from fastapi import HTTPException
+from pydantic import ValidationError
 
 from deribit_trading.rest_api import SmartOrderRequest, _build_smart_order_config
 
@@ -25,7 +24,7 @@ def _req(**kwargs):
 
 
 def test_intent_standard_default() -> None:
-    """No intent + no legacy fields → defaults to standard intent."""
+    """No intent given → defaults to standard."""
     cfg = _build_smart_order_config(_req())
     assert cfg.intent == "standard"
     assert cfg.t_patience_ms == 30_000  # default
@@ -52,46 +51,52 @@ def test_intent_overrides_with_price_limit_ticks() -> None:
     assert cfg.price_limit_ticks == 10
 
 
-def test_intent_unknown_override_rejected() -> None:
+def test_intent_unknown_override_rejected_as_400() -> None:
     with pytest.raises(HTTPException) as ei:
         _build_smart_order_config(_req(intent="standard", overrides={"bogus_key": 1}))
     assert ei.value.status_code == 400
     assert "bogus_key" in ei.value.detail
 
 
-def test_intent_invalid_override_value_propagates() -> None:
+def test_intent_invalid_override_value_returns_400() -> None:
     """SmartOrderConfig.__post_init__ ValueError surfaces as 400."""
-    with pytest.raises(ValueError):
+    with pytest.raises(HTTPException) as ei:
         _build_smart_order_config(
             _req(intent="standard", overrides={"price_limit_pct": 0.5})  # > 0.05 max
         )
+    assert ei.value.status_code == 400
+    assert "price_limit_pct" in ei.value.detail
 
 
-# ── Legacy path ────────────────────────────────────────────────────
+# ── Legacy fields rejected at Pydantic layer (extra='forbid') ──────
 
 
-def test_legacy_algorithm_field_warns_and_routes() -> None:
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        cfg = _build_smart_order_config(
-            _req(algorithm="tick-chaser", algo_params={"offset_ticks": 1})
+@pytest.mark.parametrize(
+    "field, value",
+    [
+        ("algorithm", "tick-chaser"),
+        ("algo_params", {"offset_ticks": 1}),
+        ("patience", 0.5),
+        ("price_limit", 70000),
+        ("timeout_ms", 60_000),
+        ("prefer_maker", False),
+    ],
+)
+def test_legacy_field_rejected(field, value) -> None:
+    """Each removed legacy field must trigger a Pydantic validation error."""
+    with pytest.raises(ValidationError) as ei:
+        SmartOrderRequest(
+            instrument_name="BTC-PERPETUAL",
+            direction="buy",
+            amount=1.0,
+            **{field: value},
         )
-    assert cfg.algorithm == "tick-chaser"
-    assert cfg.algo_params == {"offset_ticks": 1}
-    assert any(issubclass(c.category, DeprecationWarning) for c in caught)
+    assert field in str(ei.value)
 
 
-def test_legacy_patience_routes_to_from_legacy_urgent() -> None:
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        cfg = _build_smart_order_config(_req(patience=0.1))
-    assert cfg.intent == "urgent"  # patience < 0.3 → urgent
-    assert any(issubclass(c.category, DeprecationWarning) for c in caught)
-
-
-def test_legacy_patience_routes_to_from_legacy_standard() -> None:
-    cfg = _build_smart_order_config(_req(patience=0.5))
-    assert cfg.intent == "standard"
+def test_invalid_direction_rejected_at_pydantic_layer() -> None:
+    with pytest.raises(ValidationError):
+        SmartOrderRequest(instrument_name="BTC-PERPETUAL", direction="long", amount=1.0)
 
 
 # ── Response shape ─────────────────────────────────────────────────

@@ -4,13 +4,12 @@ import asyncio
 import json
 import logging
 import time
-import warnings
 from typing import Any, Literal
 
 from fastapi import FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +19,7 @@ from .persistence.repositories import MarketCandleRepo
 from .services import MarketDataService, PortfolioService, TradingService
 from .services.risk_manager import RiskManager
 from .smart_order.engine import SmartOrderEngine
+from .smart_order.request import build_smart_order_config
 from .smart_order.types import SmartOrderConfig
 
 
@@ -34,89 +34,36 @@ class OrderRequest(BaseModel):
     label: str | None = None
 
 
-_OVERRIDE_KEYS = {
-    "t_patience_ms",
-    "max_cross_levels",
-    "price_limit_pct",
-    "price_limit_ticks",
-    "price_limit_iv",
-    "prefer_maker",
-}
-
-
 class SmartOrderRequest(BaseModel):
-    """Create-SmartOrder request body.
+    """Create-SmartOrder request body. Intent-only path.
 
-    Intent path (preferred): pass `intent` ("standard" | "urgent") with optional
-    `overrides` dict tuning t_patience_ms / max_cross_levels / price_limit_*.
-
-    Legacy path (deprecated, kept 1 minor version): pass `algorithm` +
-    `algo_params`, or `patience` for the old TickChaser/TimedEscalation flow.
+    Required: instrument_name, direction, amount.
+    Optional: intent ("standard" default | "urgent"), overrides dict
+    (t_patience_ms / max_cross_levels / price_limit_pct / price_limit_ticks /
+    price_limit_iv / prefer_maker).
     """
 
+    model_config = ConfigDict(extra="forbid")
+
     instrument_name: str
-    direction: str
+    direction: Literal["buy", "sell"]
     amount: float
-
-    # Intent path
-    intent: Literal["standard", "urgent"] | None = None
+    intent: Literal["standard", "urgent"] = "standard"
     overrides: dict[str, Any] | None = None
-
-    # Legacy path (deprecated)
-    algorithm: str | None = None
-    algo_params: dict = Field(default_factory=dict)
-    patience: float | None = None
-    price_limit: float | None = None
-    timeout_ms: int | None = None
-    prefer_maker: bool = True
 
 
 def _build_smart_order_config(req: SmartOrderRequest) -> SmartOrderConfig:
-    """Translate request into SmartOrderConfig, handling intent + legacy paths."""
-    # Legacy path: explicit algorithm name takes precedence (kept for 1 minor version)
-    if req.algorithm is not None:
-        warnings.warn(
-            "POST /api/v1/smart-orders: 'algorithm' field is deprecated; "
-            "use 'intent' (standard|urgent) with optional 'overrides'.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return SmartOrderConfig(
+    """Translate request into SmartOrderConfig via the shared builder."""
+    try:
+        return build_smart_order_config(
             instrument_name=req.instrument_name,
             direction=req.direction,
             amount=req.amount,
-            algorithm=req.algorithm,
-            algo_params=req.algo_params,
-            price_limit=req.price_limit,
-            timeout_ms=req.timeout_ms,
-            prefer_maker=req.prefer_maker,
+            intent=req.intent,
+            overrides=req.overrides,
         )
-
-    # Legacy path: only `patience` provided → from_legacy adapter (also deprecated)
-    if req.intent is None and req.patience is not None:
-        return SmartOrderConfig.from_legacy(
-            instrument_name=req.instrument_name,
-            direction=req.direction,
-            amount=req.amount,
-            patience=req.patience,
-            prefer_maker=req.prefer_maker,
-        )
-
-    # Intent path
-    intent = req.intent or "standard"
-    overrides = req.overrides or {}
-    unknown = set(overrides) - _OVERRIDE_KEYS
-    if unknown:
-        raise HTTPException(
-            400, f"Unknown overrides keys: {sorted(unknown)}. Allowed: {sorted(_OVERRIDE_KEYS)}"
-        )
-    return SmartOrderConfig(
-        instrument_name=req.instrument_name,
-        direction=req.direction,
-        amount=req.amount,
-        intent=intent,
-        **overrides,
-    )
+    except ValueError as e:
+        raise HTTPException(400, str(e))
 
 
 class SmartOrderActionRequest(BaseModel):
@@ -697,10 +644,7 @@ def create_rest_app(
     async def create_smart_order(req: SmartOrderRequest) -> dict[str, Any]:
         if not smart_engine:
             raise HTTPException(503, "SmartOrderEngine not available")
-        try:
-            config = _build_smart_order_config(req)
-        except ValueError as e:
-            raise HTTPException(400, str(e))
+        config = _build_smart_order_config(req)
         try:
             so = await smart_engine.create_smart_order(config)
             return so.to_dict()

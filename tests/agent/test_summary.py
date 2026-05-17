@@ -46,13 +46,22 @@ def test_smart_order_summary():
             "instrument_name": "BTC-PERPETUAL",
             "direction": "buy",
             "amount": 100,
-            "algorithm": "tick-chaser",
             "intent": "standard",
+            "overrides": {"t_patience_ms": 45000, "max_cross_levels": 2},
         },
     )
     assert "BUY" in s and "BTC-PERPETUAL" in s
-    assert "tick-chaser" in s
-    assert "standard" in s
+    assert "intent=standard" in s
+    assert "patience=45000ms" in s
+    assert "cross≤2" in s
+
+
+def test_smart_order_summary_default_intent():
+    s = summarize(
+        "smart_order",
+        {"instrument_name": "ETH-PERPETUAL", "direction": "sell", "amount": 1},
+    )
+    assert "intent=standard" in s  # defaults to standard when missing
 
 
 def test_cancel_smart_order_summary():

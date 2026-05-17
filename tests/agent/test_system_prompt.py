@@ -79,10 +79,16 @@ def test_required_sections_present():
         assert section in prompt, f"Missing section: {section}"
 
 
-def test_phase_1_readonly_declared():
+def test_default_mode_is_readonly_without_hard_contradiction():
+    """Default (write_enabled=False) prompt must declare read-only behaviour
+    without a hard 'CANNOT place' that would later contradict the write-mode
+    block. The block itself ('You may call place_order...') must not appear."""
     prompt = build_system_prompt()
-    assert "Phase 1" in prompt and "read-only" in prompt
-    assert "CANNOT place" in prompt or "cannot place" in prompt.lower()
+    assert "read-only" in prompt
+    # No absolute denial that would contradict the write-mode block when on
+    assert "You CANNOT place" not in prompt
+    # The write-tools block body must NOT appear in read-only mode
+    assert "You may call place_order" not in prompt
 
 
 def test_anchor_three_principles():

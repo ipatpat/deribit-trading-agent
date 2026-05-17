@@ -20,7 +20,8 @@ from .persistence.repositories import MarketCandleRepo
 from .services import MarketDataService, PortfolioService, TradingService
 from .models import OrderType
 from .smart_order.engine import SmartOrderEngine
-from .smart_order.types import SmartOrderConfig
+from .smart_order.request import build_smart_order_config
+from .smart_order.types import SmartOrderConfig  # noqa: F401  -- re-export for callers
 
 
 # Deribit TradingView API resolution mapping (kept in sync with rest_api.py).
@@ -174,7 +175,9 @@ def create_mcp_server(
                         "depth": {
                             "type": "integer",
                             "default": 10,
-                            "description": "Levels per side (1-1000).",
+                            "minimum": 1,
+                            "maximum": 1000,
+                            "description": "Levels per side.",
                         },
                     },
                     "required": ["instrument"],
@@ -222,9 +225,9 @@ def create_mcp_server(
                         "currency": {"type": "string", "description": "BTC or ETH"},
                         "kind": {
                             "type": "string",
-                            "enum": ["option", "future", "perpetual"],
+                            "enum": ["option", "future", "perpetual", ""],
                             "default": "option",
-                            "description": "Filter; pass empty/null to include all kinds.",
+                            "description": "Filter. Default 'option'. Pass '' (empty string) to include ALL instrument kinds.",
                         },
                     },
                     "required": ["currency"],
@@ -311,7 +314,11 @@ def create_mcp_server(
                                         "description": "Options BTC-27JUN26-70000-C; futures BTC-PERPETUAL or BTC-27JUN26.",
                                     },
                                     "direction": {"type": "string", "enum": ["buy", "sell"]},
-                                    "amount": {"type": "number", "default": 1},
+                                    "amount": {
+                                        "type": "number",
+                                        "default": 1,
+                                        "exclusiveMinimum": 0,
+                                    },
                                 },
                                 "required": ["instrument", "direction"],
                             },
@@ -335,9 +342,9 @@ def create_mcp_server(
                     "properties": {
                         "instrument_name": {"type": "string"},
                         "direction": {"type": "string", "enum": ["buy", "sell"]},
-                        "amount": {"type": "number"},
+                        "amount": {"type": "number", "exclusiveMinimum": 0},
                         "order_type": {"type": "string", "enum": ["limit", "market"], "default": "limit"},
-                        "price": {"type": "number"},
+                        "price": {"type": "number", "exclusiveMinimum": 0},
                         "label": {"type": "string"},
                     },
                     "required": ["instrument_name", "direction", "amount"],
@@ -354,20 +361,45 @@ def create_mcp_server(
             ),
             Tool(
                 name="smart_order",
-                description="Create a smart order (auto chasing + fee optimization).",
+                description=(
+                    "Create a smart order routed by intent (standard maker-first "
+                    "escalating, or urgent IOC). Optional overrides tune patience "
+                    "budget, IOC cross depth, and class-aware price limits."
+                ),
                 inputSchema={
                     "type": "object",
+                    "additionalProperties": False,
+                    "required": ["instrument_name", "direction", "amount"],
                     "properties": {
                         "instrument_name": {"type": "string"},
                         "direction": {"type": "string", "enum": ["buy", "sell"]},
-                        "amount": {"type": "number"},
-                        "algorithm": {"type": "string", "default": "tick-chaser"},
-                        "patience": {"type": "number", "default": 0.5},
-                        "price_limit": {"type": "number"},
-                        "timeout_ms": {"type": "integer", "default": 120000},
-                        "prefer_maker": {"type": "boolean", "default": True},
+                        "amount": {"type": "number", "exclusiveMinimum": 0},
+                        "intent": {
+                            "type": "string",
+                            "enum": ["standard", "urgent"],
+                            "default": "standard",
+                        },
+                        "overrides": {
+                            "type": "object",
+                            "additionalProperties": False,
+                            "properties": {
+                                "t_patience_ms": {"type": "integer", "minimum": 1},
+                                "max_cross_levels": {"type": "integer", "minimum": 1},
+                                "price_limit_pct": {
+                                    "type": "number",
+                                    "exclusiveMinimum": 0,
+                                    "maximum": 0.05,
+                                },
+                                "price_limit_ticks": {"type": "integer", "minimum": 1},
+                                "price_limit_iv": {
+                                    "type": "number",
+                                    "exclusiveMinimum": 0,
+                                    "maximum": 0.2,
+                                },
+                                "prefer_maker": {"type": "boolean"},
+                            },
+                        },
                     },
-                    "required": ["instrument_name", "direction", "amount"],
                 },
             ),
             Tool(
@@ -648,41 +680,33 @@ def create_mcp_server(
                         pass
 
                 deribit_res = _RES_TO_DERIBIT.get(resolution, resolution)
-                try:
-                    result = await trading._client.call(
-                        "public/get_tradingview_chart_data",
-                        {
-                            "instrument_name": instrument,
-                            "start_timestamp": since,
-                            "end_timestamp": now,
-                            "resolution": deribit_res,
-                        },
-                    )
-                    ticks = result.get("ticks", [])
-                    opens = result.get("open", [])
-                    highs = result.get("high", [])
-                    lows = result.get("low", [])
-                    closes = result.get("close", [])
-                    volumes = result.get("volume", [])
-                    candles = [
-                        {
-                            "timestamp": ticks[i],
-                            "open": opens[i],
-                            "high": highs[i],
-                            "low": lows[i],
-                            "close": closes[i],
-                            "volume": volumes[i] if i < len(volumes) else 0,
-                        }
-                        for i in range(len(ticks))
-                    ]
-                    return _json_text(candles)
-                except Exception as exc:  # noqa: BLE001
-                    return _json_text({
-                        "error": f"Failed to fetch candles for {instrument}: {type(exc).__name__}: {exc}",
-                        "instrument": instrument,
-                        "resolution": resolution,
-                        "period": period,
-                    })
+                result = await trading._client.call(
+                    "public/get_tradingview_chart_data",
+                    {
+                        "instrument_name": instrument,
+                        "start_timestamp": since,
+                        "end_timestamp": now,
+                        "resolution": deribit_res,
+                    },
+                )
+                ticks = result.get("ticks", [])
+                opens = result.get("open", [])
+                highs = result.get("high", [])
+                lows = result.get("low", [])
+                closes = result.get("close", [])
+                volumes = result.get("volume", [])
+                candles = [
+                    {
+                        "timestamp": ticks[i],
+                        "open": opens[i],
+                        "high": highs[i],
+                        "low": lows[i],
+                        "close": closes[i],
+                        "volume": volumes[i] if i < len(volumes) else 0,
+                    }
+                    for i in range(len(ticks))
+                ]
+                return _json_text(candles)
 
             # ── Batch ──────────────────────────────────────
             elif name == "get_market_snapshot":
@@ -716,45 +740,53 @@ def create_mcp_server(
             elif name == "analyze_option_combo":
                 import httpx
                 legs = arguments.get("legs", [])
-                try:
-                    body = {"legs": legs}
-                    async with httpx.AsyncClient() as client:
-                        resp = await client.post(
-                            "http://localhost:8000/api/v1/options/payoff",
-                            json=body,
-                            timeout=30,
+                body = {"legs": legs}
+                async with httpx.AsyncClient() as client:
+                    resp = await client.post(
+                        "http://localhost:8000/api/v1/options/payoff",
+                        json=body,
+                        timeout=30,
+                    )
+                if resp.status_code >= 400:
+                    # Surface the payoff API's actual error (FastAPI HTTPException
+                    # detail string or Pydantic validation array). Don't swallow.
+                    try:
+                        detail = resp.json().get("detail", resp.text)
+                    except Exception:  # noqa: BLE001
+                        detail = resp.text
+                    return [TextContent(
+                        type="text",
+                        text=f"analyze_option_combo failed (HTTP {resp.status_code}): {detail}",
+                    )]
+                result = resp.json()
+
+                s = result.get("summary", {})
+                legs_info = result.get("legs", [])
+
+                text = "Option+Futures Combo Analysis\n"
+                text += f"{'='*40}\n\n"
+                text += "Legs:\n"
+                for l in legs_info:
+                    if l.get("type") == "future":
+                        text += (
+                            f"  {l['direction'].upper()} {l['instrument']} "
+                            f"x{l['amount']} (entry: {l.get('entry_price', 0):,.0f})\n"
                         )
-                        result = resp.json()
-
-                    s = result.get("summary", {})
-                    legs_info = result.get("legs", [])
-
-                    text = "Option+Futures Combo Analysis\n"
-                    text += f"{'='*40}\n\n"
-                    text += "Legs:\n"
-                    for l in legs_info:
-                        if l.get("type") == "future":
-                            text += (
-                                f"  {l['direction'].upper()} {l['instrument']} "
-                                f"x{l['amount']} (entry: {l.get('entry_price', 0):,.0f})\n"
-                            )
-                        else:
-                            text += (
-                                f"  {l['direction'].upper()} {l['instrument']} "
-                                f"x{l['amount']} @ {l.get('premium_btc', 0):.4f} BTC\n"
-                            )
-                    text += "\nPayoff Summary:\n"
-                    text += f"  Max Profit: {s['max_profit_btc']:.4f} BTC (${s['max_profit_usd']:,.0f})\n"
-                    text += f"  Max Loss:   {s['max_loss_btc']:.4f} BTC (${s['max_loss_usd']:,.0f})\n"
-                    text += f"  Breakeven:  {', '.join(f'${b:,.0f}' for b in s.get('breakeven', []))}\n"
-                    text += f"  R/R Ratio:  {s['risk_reward_ratio']:.2f}\n"
-                    text += "\nGreeks:\n"
-                    text += f"  Net Delta: {s['net_delta']:.4f}\n"
-                    text += f"  Net Theta: {s['net_theta']:.4f}\n"
-                    text += f"  Net Premium: {s['net_premium_btc']:.4f} BTC\n"
-                    return [TextContent(type="text", text=text)]
-                except Exception as e:  # noqa: BLE001
-                    return [TextContent(type="text", text=f"Error: {e}")]
+                    else:
+                        text += (
+                            f"  {l['direction'].upper()} {l['instrument']} "
+                            f"x{l['amount']} @ {l.get('premium_btc', 0):.4f} BTC\n"
+                        )
+                text += "\nPayoff Summary:\n"
+                text += f"  Max Profit: {s['max_profit_btc']:.4f} BTC (${s['max_profit_usd']:,.0f})\n"
+                text += f"  Max Loss:   {s['max_loss_btc']:.4f} BTC (${s['max_loss_usd']:,.0f})\n"
+                text += f"  Breakeven:  {', '.join(f'${b:,.0f}' for b in s.get('breakeven', []))}\n"
+                text += f"  R/R Ratio:  {s['risk_reward_ratio']:.2f}\n"
+                text += "\nGreeks:\n"
+                text += f"  Net Delta: {s['net_delta']:.4f}\n"
+                text += f"  Net Theta: {s['net_theta']:.4f}\n"
+                text += f"  Net Premium: {s['net_premium_btc']:.4f} BTC\n"
+                return [TextContent(type="text", text=text)]
 
             # ── Smart-order list (engine console) ─────────
             elif name == "list_smart_orders":
@@ -787,23 +819,31 @@ def create_mcp_server(
             elif name == "smart_order":
                 if not smart_engine:
                     return [TextContent(type="text", text="SmartOrderEngine not available")]
+                try:
+                    config = build_smart_order_config(
+                        instrument_name=arguments["instrument_name"],
+                        direction=arguments["direction"],
+                        amount=arguments["amount"],
+                        intent=arguments.get("intent", "standard"),
+                        overrides=arguments.get("overrides"),
+                    )
+                except ValueError as e:
+                    return [TextContent(
+                        type="text",
+                        text=f"Invalid smart_order params: {e}",
+                    )]
                 env_warning = ""
                 if env_manager.is_production():
                     env_warning = "WARNING: PRODUCTION ENVIRONMENT\n\n"
-                config = SmartOrderConfig(
-                    instrument_name=arguments["instrument_name"],
-                    direction=arguments["direction"],
-                    amount=arguments["amount"],
-                    algorithm=arguments.get("algorithm", "tick-chaser"),
-                    price_limit=arguments.get("price_limit"),
-                    timeout_ms=arguments.get("timeout_ms", 120000),
-                    prefer_maker=arguments.get("prefer_maker", True),
-                    patience=arguments.get("patience", 0.5),
-                )
                 so = await smart_engine.create_smart_order(config)
+                so_dict = so.to_dict()
+                prefix = env_warning
+                if so_dict.get("state") == "failed":
+                    err = so_dict.get("last_error") or "(no detail captured)"
+                    prefix += f"SmartOrder FAILED: {err}\n\n"
                 return [TextContent(
                     type="text",
-                    text=env_warning + json.dumps(so.to_dict(), indent=2, default=str),
+                    text=prefix + json.dumps(so_dict, indent=2, default=str),
                 )]
 
             elif name == "cancel_smart_order":

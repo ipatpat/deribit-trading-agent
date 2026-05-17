@@ -6,7 +6,6 @@ Action is the sole output. This boundary keeps algorithms pure.
 
 from __future__ import annotations
 
-import warnings
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Literal
@@ -274,16 +273,7 @@ class SmartOrderConfig:
     # Escape hatch: if False, skip post_only=True at Lv0/Lv1 (rare; advanced).
     prefer_maker: bool = True
 
-    # Legacy passthrough for tick-chaser/timed-escalation (deprecated path).
-    algorithm: str | None = None
-    algo_params: dict = field(default_factory=dict)
-
-    # Legacy: kept for backward-compat construction; not used in intent path.
-    price_limit: float | None = None
-    timeout_ms: int | None = None
-
     def __post_init__(self) -> None:
-        # Validate price_limit overrides
         if self.price_limit_pct is not None:
             if not (0 < self.price_limit_pct <= 0.05):
                 raise ValueError(
@@ -305,32 +295,3 @@ class SmartOrderConfig:
             raise ValueError(
                 f"max_cross_levels must be >= 1, got {self.max_cross_levels}"
             )
-
-    @classmethod
-    def from_legacy(
-        cls,
-        instrument_name: str,
-        direction: str,
-        amount: float,
-        patience: float = 0.5,
-        **kwargs,
-    ) -> "SmartOrderConfig":
-        """Adapter for callers still passing the old `patience` float field.
-
-        patience < 0.3  → urgent intent
-        patience >= 0.3 → standard intent
-        """
-        warnings.warn(
-            "SmartOrderConfig.from_legacy(patience=...) is deprecated; "
-            "use intent='standard'|'urgent' directly.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        intent: Intent = "urgent" if patience < 0.3 else "standard"
-        return cls(
-            instrument_name=instrument_name,
-            direction=direction,
-            amount=amount,
-            intent=intent,
-            **kwargs,
-        )

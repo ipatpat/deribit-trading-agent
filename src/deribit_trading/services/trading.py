@@ -11,8 +11,7 @@ from ..persistence import Database, OrderRepo, TradeRepo
 
 if TYPE_CHECKING:
     from ..config.account_manager import AccountManager
-    from ..smart_order.engine import SmartOrder, SmartOrderEngine
-    from ..smart_order.types import SmartOrderConfig
+    from ..smart_order.engine import SmartOrderEngine
     from .risk_manager import RiskManager
 
 
@@ -159,50 +158,6 @@ class TradingService:
 
     def set_smart_engine(self, engine: SmartOrderEngine) -> None:
         self._smart_engine = engine
-
-    async def smart_buy(
-        self,
-        instrument_name: str,
-        amount: float,
-        algorithm: str = "tick-chaser",
-        price_limit: float | None = None,
-        timeout_ms: int | None = 120_000,
-        patience: float = 0.5,
-    ) -> SmartOrder:
-        self._env.check_trading_allowed()
-        from ..smart_order.types import SmartOrderConfig
-        config = SmartOrderConfig(
-            instrument_name=instrument_name,
-            direction="buy",
-            amount=amount,
-            algorithm=algorithm,
-            price_limit=price_limit,
-            timeout_ms=timeout_ms,
-            patience=patience,
-        )
-        return await self._smart_engine.create_smart_order(config)
-
-    async def smart_sell(
-        self,
-        instrument_name: str,
-        amount: float,
-        algorithm: str = "tick-chaser",
-        price_limit: float | None = None,
-        timeout_ms: int | None = 120_000,
-        patience: float = 0.5,
-    ) -> SmartOrder:
-        self._env.check_trading_allowed()
-        from ..smart_order.types import SmartOrderConfig
-        config = SmartOrderConfig(
-            instrument_name=instrument_name,
-            direction="sell",
-            amount=amount,
-            algorithm=algorithm,
-            price_limit=price_limit,
-            timeout_ms=timeout_ms,
-            patience=patience,
-        )
-        return await self._smart_engine.create_smart_order(config)
 
     async def _persist_order(self, order: Order) -> None:
         await self._order_repo.save(

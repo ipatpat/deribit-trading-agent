@@ -52,13 +52,14 @@ def _summarize_smart_order(args: dict[str, Any]) -> str:
     instrument = _safe(args, "instrument_name")
     direction = _safe(args, "direction").upper()
     amount = _safe(args, "amount")
-    algorithm = args.get("algorithm", "tick-chaser")
-    intent = args.get("intent")
-    parts = [f"Smart {direction} {instrument}", f"amount={amount}", f"algo={algorithm}"]
-    if intent:
-        parts.append(f"intent={intent}")
-    if args.get("price_limit") is not None:
-        parts.append(f"limit=${args['price_limit']:,}")
+    intent = args.get("intent") or "standard"
+    parts = [f"Smart {direction} {instrument}", f"amount={amount}", f"intent={intent}"]
+    overrides = args.get("overrides") or {}
+    if isinstance(overrides, dict):
+        if "t_patience_ms" in overrides:
+            parts.append(f"patience={overrides['t_patience_ms']}ms")
+        if "max_cross_levels" in overrides:
+            parts.append(f"cross≤{overrides['max_cross_levels']}")
     return " · ".join(parts)
 
 
