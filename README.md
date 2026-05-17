@@ -4,7 +4,8 @@
 
 A personal **derivatives trading terminal** for Deribit, with a built-in **AI copilot named Vida** that streams answers about live markets, your portfolio, and option strategies — and, when you let her, places orders for you behind a one-click confirmation card.
 
-![Dashboard with AI assistant](assets/screenshots/dashboard.png)
+![Dashboard with AI assistant](assets/screenshots/dashboard1.png)
+![Trading with AI assistant](assets/screenshots/dashboard2.png)
 
 ---
 
