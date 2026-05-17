@@ -1,13 +1,15 @@
 import { useEffect, useRef, useState } from 'react';
+import { X, Loader2 } from 'lucide-react';
 import Card from '../components/common/Card';
 import Skeleton from '../components/common/Skeleton';
 import EquityCurve from '../components/charts/EquityCurve';
-import { type PortfolioOverview, getPortfolioOverview } from '../api/client';
+import { type PortfolioOverview, getPortfolioOverview, cancelOrder } from '../api/client';
 import { formatPrice, formatUsd, formatCompactUsd, formatNativeBalance } from '../utils/format';
 import { usePolling } from '../utils/usePolling';
 import { useRefreshInterval } from '../stores/settings';
 import { useToastStore } from '../stores/toast';
 import { useAccountsStore } from '../stores/accounts';
+import { useSmartOrdersStore } from '../stores/smartOrders';
 
 function Dashboard() {
   const [data, setData] = useState<PortfolioOverview | null>(null);
@@ -48,6 +50,41 @@ function Dashboard() {
   const ethPrice = data?.index_prices?.ETH ?? 0;
   const totalUsd = data?.total_usd ?? 0;
   const positions = data?.positions ?? [];
+  const orders = data?.orders ?? [];
+
+  const smartOrders = useSmartOrdersStore((s) => s.orders);
+  const smartChildIds = new Set(
+    smartOrders.filter((s) => s.deribit_order_id).map((s) => s.deribit_order_id as string),
+  );
+  const plainOrders = orders.filter((o) => !smartChildIds.has(o.order_id));
+
+  const [cancellingId, setCancellingId] = useState<string | null>(null);
+
+  const handleCancelOrder = async (orderId: string, instrument: string) => {
+    const ok = window.confirm(`Cancel order ${instrument} (${orderId.slice(0, 8)})?`);
+    if (!ok) return;
+    setCancellingId(orderId);
+    try {
+      await cancelOrder(orderId);
+      showToast('success', 'Order cancelled');
+      fetchData();
+    } catch (err) {
+      showToast('error', (err as Error).message || 'Failed to cancel order');
+    } finally {
+      setCancellingId(null);
+    }
+  };
+
+  const formatRelative = (ts: number): string => {
+    const diff = Date.now() - ts;
+    const s = Math.floor(diff / 1000);
+    if (s < 60) return `${s}s ago`;
+    const m = Math.floor(s / 60);
+    if (m < 60) return `${m}m ago`;
+    const h = Math.floor(m / 60);
+    if (h < 24) return `${h}h ago`;
+    return `${Math.floor(h / 24)}d ago`;
+  };
 
   const totalPnlUsd = (btc?.total_pl ?? 0) * btcPrice + (eth?.total_pl ?? 0) * ethPrice;
   const todayPnlUsd =
@@ -193,25 +230,25 @@ function Dashboard() {
         </Card>
       </div>
 
-      {/* Equity Curve + Positions side-by-side */}
-      <div className="grid grid-cols-2 gap-4">
-        <Card className="p-4">
-          <EquityCurve btcPrice={btcPrice} ethPrice={ethPrice} />
-        </Card>
+      {/* Equity Curve — own row */}
+      <Card className="p-4">
+        <EquityCurve btcPrice={btcPrice} ethPrice={ethPrice} />
+      </Card>
 
-        <Card className="p-4 flex flex-col min-h-0">
-          <div className="text-xs text-primary uppercase tracking-wider font-semibold mb-3 flex-shrink-0">
-            Open Positions
+      {/* Open Positions — own row, max-h with internal scroll */}
+      <Card className="p-4 max-h-[420px] flex flex-col min-h-0">
+        <div className="text-xs text-primary uppercase tracking-wider font-semibold mb-3 flex-shrink-0">
+          Open Positions
+        </div>
+        {loading ? (
+          <div className="space-y-2 flex-1">
+            {[1, 2].map((i) => <Skeleton key={i} className="h-8 w-full" />)}
           </div>
-          {loading ? (
-            <div className="space-y-2 flex-1">
-              {[1, 2].map((i) => <Skeleton key={i} className="h-8 w-full" />)}
-            </div>
-          ) : positions.length === 0 ? (
-            <div className="text-sm text-secondary py-6 text-center flex-1 flex items-center justify-center">No open positions</div>
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-xs">
+        ) : positions.length === 0 ? (
+          <div className="text-sm text-secondary py-6 text-center flex-1 flex items-center justify-center">No open positions</div>
+        ) : (
+          <div className="overflow-y-auto flex-1 min-h-0">
+            <table className="w-full text-xs">
               <thead className="sticky top-0 bg-white z-10">
                 <tr className="border-b border-divider text-xs text-secondary uppercase tracking-wider">
                   <th className="text-left pb-3 pr-4 font-semibold">Instrument</th>
@@ -264,9 +301,75 @@ function Dashboard() {
               </tbody>
             </table>
           </div>
-          )}
-        </Card>
-      </div>
+        )}
+      </Card>
+
+      {/* Open Orders — own row, max-h with internal scroll */}
+      <Card className="p-4 max-h-[360px] flex flex-col min-h-0">
+        <div className="text-xs text-primary uppercase tracking-wider font-semibold mb-3 flex-shrink-0">
+          Open Orders
+        </div>
+        {loading ? (
+          <div className="space-y-2 flex-1">
+            {[1, 2].map((i) => <Skeleton key={i} className="h-8 w-full" />)}
+          </div>
+        ) : plainOrders.length === 0 ? (
+          <div className="text-sm text-secondary py-6 text-center flex-1 flex items-center justify-center">No open orders</div>
+        ) : (
+          <div className="overflow-y-auto flex-1 min-h-0">
+            <table className="w-full text-xs">
+              <thead className="sticky top-0 bg-white z-10">
+                <tr className="border-b border-divider text-xs text-secondary uppercase tracking-wider">
+                  <th className="text-left pb-3 pr-4 font-semibold">Instrument</th>
+                  <th className="text-left pb-3 pr-4 font-semibold">Dir</th>
+                  <th className="text-left pb-3 pr-4 font-semibold">Type</th>
+                  <th className="text-right pb-3 pr-4 font-semibold">Size</th>
+                  <th className="text-right pb-3 pr-4 font-semibold">Price</th>
+                  <th className="text-right pb-3 pr-4 font-semibold">Created</th>
+                  <th className="text-right pb-3 font-semibold">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {plainOrders.map((o) => {
+                  const isCancelling = cancellingId === o.order_id;
+                  return (
+                    <tr key={o.order_id} className="border-b border-divider/50 hover:bg-cream/30 transition-colors">
+                      <td className="py-3 pr-4 font-semibold text-primary">{o.instrument_name}</td>
+                      <td className="py-3 pr-4">
+                        <span className={`inline-block px-2 py-1 rounded text-xs font-bold ${
+                          o.direction === 'buy' ? 'bg-profit-bg text-profit' : 'bg-loss-bg text-loss'
+                        }`}>
+                          {o.direction.toUpperCase()}
+                        </span>
+                      </td>
+                      <td className="py-3 pr-4 text-secondary">{o.order_type}</td>
+                      <td className="py-3 pr-4 text-right font-mono">
+                        {o.filled_amount}/{o.amount}
+                      </td>
+                      <td className="py-3 pr-4 text-right font-mono">
+                        {o.price != null ? formatPrice(o.price) : '-'}
+                      </td>
+                      <td className="py-3 pr-4 text-right text-secondary">{formatRelative(o.creation_timestamp)}</td>
+                      <td className="py-3 text-right">
+                        <button
+                          onClick={() => handleCancelOrder(o.order_id, o.instrument_name)}
+                          disabled={isCancelling}
+                          title="Cancel order"
+                          className="inline-flex items-center justify-center w-7 h-7 rounded hover:bg-loss-bg text-secondary hover:text-loss disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                        >
+                          {isCancelling
+                            ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                            : <X className="w-3.5 h-3.5" />}
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Card>
     </div>
   );
 }

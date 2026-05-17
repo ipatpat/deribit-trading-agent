@@ -40,7 +40,7 @@ export interface Order {
   order_id: string;
   instrument_name: string;
   direction: 'buy' | 'sell';
-  price: number;
+  price: number | null;
   amount: number;
   filled_amount: number;
   order_type: 'limit' | 'market' | 'stop_limit' | 'stop_market';

@@ -46,12 +46,17 @@ export function getPortfolioSnapshot(currency = 'BTC'): Promise<PortfolioSnapsho
 export interface PortfolioOverview {
   accounts: Record<string, any>;
   positions: Position[];
+  orders: Order[];
   index_prices: Record<string, number>;
   total_usd: number;
 }
 
 export function getPortfolioOverview(): Promise<PortfolioOverview> {
   return request('/portfolio/overview');
+}
+
+export function cancelOrder(orderId: string): Promise<Order> {
+  return request(`/orders/${orderId}`, { method: 'DELETE' });
 }
 
 /* ── Options ── */

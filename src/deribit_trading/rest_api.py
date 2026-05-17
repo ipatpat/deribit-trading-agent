@@ -563,11 +563,13 @@ def create_rest_app(
     async def get_portfolio_overview() -> dict[str, Any]:
         """Multi-currency account overview: BTC + ETH + index prices + USD total."""
         # Use raw API call to get ALL fields (model_dump loses extra="ignore" fields)
-        btc_raw, eth_raw, btc_pos, eth_pos, btc_idx, eth_idx = await asyncio.gather(
+        btc_raw, eth_raw, btc_pos, eth_pos, btc_orders, eth_orders, btc_idx, eth_idx = await asyncio.gather(
             trading._client.call("private/get_account_summary", {"currency": "BTC", "extended": True}, timeout=20),
             trading._client.call("private/get_account_summary", {"currency": "ETH", "extended": True}, timeout=20),
             trading._client.get_positions("BTC"),
             trading._client.get_positions("ETH"),
+            trading.get_open_orders("BTC"),
+            trading.get_open_orders("ETH"),
             trading._client.call("public/get_index_price", {"index_name": "btc_usd"}, timeout=20),
             trading._client.call("public/get_index_price", {"index_name": "eth_usd"}, timeout=20),
         )
@@ -584,12 +586,15 @@ def create_rest_app(
             + [p.model_dump() for p in eth_pos if p.size != 0]
         )
 
+        all_orders = [o.model_dump() for o in btc_orders + eth_orders]
+
         return {
             "accounts": {
                 "BTC": btc_raw,
                 "ETH": eth_raw,
             },
             "positions": all_positions,
+            "orders": all_orders,
             "index_prices": {"BTC": btc_price, "ETH": eth_price},
             "total_usd": total_usd,
         }
